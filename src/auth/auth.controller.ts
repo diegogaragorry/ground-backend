@@ -73,13 +73,17 @@ export const registerRequestCode = async (req: Request, res: Response) => {
     try {
       await sendSignupCodeEmail(email, code);
     } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
       console.error("sendSignupCodeEmail error:", err);
       try {
         await prisma.emailVerificationCode.delete({ where: { id: rec.id } });
       } catch {
         // ignore
       }
-      return res.status(500).json({ error: "Failed to send email. Check SMTP config (SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM)." });
+      return res.status(500).json({
+        error: "Failed to send email. Check SMTP config (SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM).",
+        detail: msg,
+      });
     }
 
     return res.status(200).json({ ok: true });
