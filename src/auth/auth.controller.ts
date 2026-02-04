@@ -35,57 +35,61 @@ function getUserAgent(req: Request) {
  * Body: { email }
  */
 export const registerRequestCode = async (req: Request, res: Response) => {
-  const email = normalizeEmail(req.body?.email);
-
-  if (!email) return res.status(400).json({ error: "email is required" });
-
-  const existingUser = await prisma.user.findUnique({ where: { email } });
-  if (existingUser) return res.status(409).json({ error: "User already exists" });
-
-  const purpose = "signup";
-  const ip = getClientIp(req);
-  const userAgent = getUserAgent(req);
-
-  const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
-  const recentCount = await prisma.emailVerificationCode.count({
-    where: { email, purpose, createdAt: { gte: tenMinAgo } },
-  });
-  if (recentCount >= 3) {
-    return res.status(429).json({ error: "Too many requests. Try again later." });
-  }
-
-  const code = gen6();
-  const codeHash = hashCode(email, code);
-  const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-
-  // Creamos el registro del código
-  const rec = await prisma.emailVerificationCode.create({
-    data: {
-      email,
-      codeHash,
-      purpose,
-      expiresAt,
-      ip: ip ?? undefined,
-      userAgent,
-    },
-  });
-
   try {
-    await sendSignupCodeEmail(email, code);
-  } catch (err) {
-    console.error("sendSignupCodeEmail error:", err);
+    const email = normalizeEmail(req.body?.email);
 
-    // Limpieza (para no dejar códigos muertos)
-    try {
-      await prisma.emailVerificationCode.delete({ where: { id: rec.id } });
-    } catch {
-      // ignore
+    if (!email) return res.status(400).json({ error: "email is required" });
+
+    const existingUser = await prisma.user.findUnique({ where: { email } });
+    if (existingUser) return res.status(409).json({ error: "User already exists" });
+
+    const purpose = "signup";
+    const ip = getClientIp(req);
+    const userAgent = getUserAgent(req);
+
+    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const recentCount = await prisma.emailVerificationCode.count({
+      where: { email, purpose, createdAt: { gte: tenMinAgo } },
+    });
+    if (recentCount >= 3) {
+      return res.status(429).json({ error: "Too many requests. Try again later." });
     }
 
-    return res.status(500).json({ error: "Failed to send email" });
-  }
+    const code = gen6();
+    const codeHash = hashCode(email, code);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-  return res.status(200).json({ ok: true });
+    const rec = await prisma.emailVerificationCode.create({
+      data: {
+        email,
+        codeHash,
+        purpose,
+        expiresAt,
+        ip: ip ?? undefined,
+        userAgent,
+      },
+    });
+
+    try {
+      await sendSignupCodeEmail(email, code);
+    } catch (err) {
+      console.error("sendSignupCodeEmail error:", err);
+      try {
+        await prisma.emailVerificationCode.delete({ where: { id: rec.id } });
+      } catch {
+        // ignore
+      }
+      return res.status(500).json({ error: "Failed to send email. Check SMTP config (SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM)." });
+    }
+
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error("registerRequestCode error:", err);
+    return res.status(500).json({
+      error: "Could not send verification code",
+      detail: process.env.NODE_ENV === "development" ? String((err as Error).message) : undefined,
+    });
+  }
 };
 
 /**

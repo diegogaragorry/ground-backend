@@ -85,4 +85,13 @@ app.get("/me", requireAuth, (req: AuthRequest, res) => {
   res.json({ userId: req.userId });
 });
 
+// ✅ Errores no capturados → siempre JSON (nunca HTML) y log para Railway
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error("Unhandled error:", err);
+  res.status(500).json({
+    error: "Internal Server Error",
+    ...(process.env.NODE_ENV === "development" && { detail: err.message }),
+  });
+});
+
 export default app;
