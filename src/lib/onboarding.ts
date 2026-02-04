@@ -13,7 +13,7 @@ export function readOnbForUser(userId: string): OnbState {
     if (!raw) return { step: 1, dismissed: false };
     const parsed = JSON.parse(raw);
     const step = Number(parsed?.step);
-    if (step >= 1 && step <= 5) return { step, dismissed: !!parsed?.dismissed };
+    if (step >= 1 && step <= 5) return { step: step as 1 | 2 | 3 | 4 | 5, dismissed: !!parsed?.dismissed };
     return { step: 1, dismissed: false };
   } catch {
     return { step: 1, dismissed: false };

@@ -334,7 +334,8 @@ export const annualBudget = async (req: AuthRequest, res: Response) => {
 
     if (baseMonth == null || baseUsd == null) return 0;
 
-    const startM = Math.max(yieldStartMonthForYear(inv, year), baseMonth);
+    const yStart = yieldStartMonthForYear(inv, year as number);
+    const startM = Math.max(yStart, baseMonth ?? 0);
     const diff = m - startM;
     if (diff <= 0) return baseUsd;
 

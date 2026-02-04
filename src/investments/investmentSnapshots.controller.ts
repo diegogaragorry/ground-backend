@@ -27,7 +27,8 @@ export const listSnapshotsByYear = async (req: AuthRequest, res: Response) => {
     orderBy: { month: "asc" },
   });
 
-  const map = new Map(snaps.map((s) => [s.month, s]));
+  type Snap = (typeof snaps)[number];
+  const map = new Map<number, Snap>(snaps.map((s) => [s.month, s]));
 
   const months = Array.from({ length: 12 }, (_, i) => i + 1).map((m) => {
     const s = map.get(m);
