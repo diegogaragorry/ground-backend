@@ -28,8 +28,27 @@ import plannedExpensesRoutes from "./plannedExpenses/plannedExpenses.routes";
 
 const app = express();
 
-// ✅ CORS primero (antes de rutas)
-app.use(cors({ origin: ["http://localhost:5173", "http://localhost:5174"] }));
+// ✅ CORS: orígenes permitidos (Vercel + localhost). Lista explícita evita fallos de preflight en Railway.
+const allowedOrigins = [
+  /^https:\/\/[\w.-]+\.vercel\.app$/,   // cualquier deployment Vercel (prod + preview)
+  /^https?:\/\/localhost(:\d+)?$/,       // dev local
+];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Peticiones sin origin (ej. Postman, curl) o origen permitido
+      if (!origin || allowedOrigins.some((re) => re.test(origin))) {
+        callback(null, true);
+      } else {
+        callback(null, false);
+      }
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  })
+);
 
 // ✅ JSON después
 app.use(express.json());
