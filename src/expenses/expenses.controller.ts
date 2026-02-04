@@ -3,6 +3,11 @@ import { prisma } from "../lib/prisma";
 import { toUsd } from "../utils/fx";
 import type { AuthRequest } from "../middlewares/requireAuth";
 
+function paramId(params: { id?: string | string[] }): string {
+  const v = params.id;
+  return Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
+}
+
 function parseYearMonth(query: any) {
   const year = Number(query.year);
   const month = Number(query.month);
@@ -151,7 +156,7 @@ export const expensesSummary = async (req: AuthRequest, res: Response) => {
 
 export const updateExpense = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
-  const id = req.params.id;
+  const id = paramId(req.params);
 
   const existing = await prisma.expense.findFirst({ where: { id, userId } });
   if (!existing) return res.status(404).json({ error: "Expense not found" });
@@ -238,7 +243,7 @@ export const updateExpense = async (req: AuthRequest, res: Response) => {
 
 export const deleteExpense = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
-  const id = req.params.id;
+  const id = paramId(req.params);
 
   const existing = await prisma.expense.findFirst({ where: { id, userId } });
   if (!existing) return res.status(404).json({ error: "Expense not found" });
