@@ -40,6 +40,8 @@ export async function sendSignupCodeEmail(to: string, code: string) {
   `;
 
   if (RESEND_API_KEY) {
+    // Resend solo permite "from" verificado: usar dominio de prueba o dominio propio verificado en resend.com/domains
+    const fromResend = EMAIL_FROM.includes("resend.dev") ? EMAIL_FROM : "Ground <onboarding@resend.dev>";
     const res = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
@@ -47,7 +49,7 @@ export async function sendSignupCodeEmail(to: string, code: string) {
         Authorization: `Bearer ${RESEND_API_KEY}`,
       },
       body: JSON.stringify({
-        from: EMAIL_FROM,
+        from: fromResend,
         to: [recipient],
         subject,
         html,
