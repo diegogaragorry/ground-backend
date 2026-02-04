@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "Expense" ADD COLUMN     "amountUsd" DOUBLE PRECISION,
+ADD COLUMN     "usdUyuRate" DOUBLE PRECISION;

@@ -1,0 +1,18 @@
+import { Router } from "express";
+import { login, me, registerRequestCode, registerVerify } from "./auth.controller";
+import { requireAuth } from "../middlewares/requireAuth";
+
+const router = Router();
+
+// ✅ Nuevo flujo de registro con código
+router.post("/register/request-code", registerRequestCode);
+router.post("/register/verify", registerVerify);
+
+// ✅ Login / Me
+router.post("/login", login);
+router.get("/me", requireAuth, me);
+
+// (Opcional) si querés que /auth/register no exista para obligar al nuevo flujo:
+// router.post("/register", (_, res) => res.status(404).json({ error: "Registration disabled. Use /auth/register/request-code and /auth/register/verify." }));
+
+export default router;

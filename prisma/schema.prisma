@@ -1,0 +1,325 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  USER
+  SUPER_ADMIN
+}
+
+/**
+ * ✅ NEW: Expense type (Option 2 = frozen on Expense too)
+ */
+enum ExpenseType {
+  FIXED
+  VARIABLE
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  role      UserRole @default(USER)
+  createdAt DateTime @default(now())
+
+  expenses     Expense[]
+  categories   Category[]
+  budgets      Budget[]
+  investments  Investment[]
+  incomes      Income[]
+  periods      Period[]
+  expensePlans ExpensePlan[]
+  monthCloses  MonthClose[]
+
+  expenseTemplates ExpenseTemplate[]
+  plannedExpenses  PlannedExpense[]
+  monthlyBudgets   MonthlyBudget[]
+}
+
+model Category {
+  id        String   @id @default(uuid())
+  name      String
+  userId    String
+  createdAt DateTime @default(now())
+
+  // ✅ category belongs to fixed/variable group
+  expenseType ExpenseType @default(VARIABLE)
+
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expenses Expense[]
+  budgets  Budget[]
+
+  expenseTemplates ExpenseTemplate[]
+  plannedExpenses  PlannedExpense[]
+
+  @@unique([userId, name])
+}
+
+model Currency {
+  id   String @id
+  name String
+
+  expenses            Expense[]
+  budgets             Budget[]
+  investmentMovements InvestmentMovement[]
+  investments         Investment[]
+
+  incomes Income[]
+}
+
+model Expense {
+  id          String   @id @default(uuid())
+  description String
+  amount      Float
+  amountUsd   Float
+  usdUyuRate  Float?
+  date        DateTime
+  userId      String
+  categoryId  String
+  currencyId  String
+  createdAt   DateTime @default(now())
+
+  // ✅ frozen type at creation time
+  expenseType ExpenseType @default(VARIABLE)
+
+  // ✅ link to planned/draft (1–1)
+  plannedExpenseId String? @unique
+  plannedExpense   PlannedExpense? @relation(fields: [plannedExpenseId], references: [id], onDelete: SetNull)
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  currency Currency @relation(fields: [currencyId], references: [id])
+
+  @@index([userId, date])
+  @@index([userId, categoryId])
+}
+
+model Budget {
+  id         String @id @default(uuid())
+  year       Int
+  month      Int
+  amount     Float
+  userId     String
+  categoryId String
+  currencyId String
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  currency Currency @relation(fields: [currencyId], references: [id])
+
+  @@unique([userId, year, month, categoryId, currencyId])
+}
+
+model Investment {
+  id        String   @id @default(uuid())
+  name      String
+  type      String
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  currencyId String?
+  currency   Currency? @relation(fields: [currencyId], references: [id], onDelete: SetNull)
+
+  targetAnnualReturn Float @default(0)
+  yieldStartYear     Int?
+  yieldStartMonth    Int?
+
+  movements InvestmentMovement[]
+  snapshots InvestmentSnapshot[]
+}
+
+model InvestmentMovement {
+  id           String   @id @default(uuid())
+  investmentId String
+  date         DateTime
+  amount       Float
+  type         String
+  currencyId   String
+
+  investment Investment @relation(fields: [investmentId], references: [id], onDelete: Cascade)
+  currency   Currency   @relation(fields: [currencyId], references: [id])
+}
+
+model InvestmentSnapshot {
+  id String @id @default(uuid())
+
+  investmentId String
+  investment   Investment @relation(fields: [investmentId], references: [id], onDelete: Cascade)
+
+  year  Int
+  month Int
+
+  capital    Float?
+  capitalUsd Float?
+
+  isClosed Boolean @default(false)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime? @updatedAt
+
+  @@unique([investmentId, year, month])
+  @@index([year, month])
+}
+
+model Period {
+  id        String    @id @default(uuid())
+  userId    String
+  year      Int
+  month     Int
+  isClosed  Boolean   @default(false)
+  closedAt  DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  finalIncomeUsd   Float?
+  finalExpensesUsd Float?
+  finalInvEarnUsd  Float?
+  finalBalanceUsd  Float?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, year, month])
+  @@index([year, month])
+}
+
+model Income {
+  id        String   @id @default(uuid())
+  userId    String
+  year      Int
+  month     Int
+  amountUsd Float
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  currencyId String?
+  currency   Currency? @relation(fields: [currencyId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, year, month])
+  @@index([year, month])
+}
+
+model ExpensePlan {
+  id        String   @id @default(uuid())
+  userId    String
+  year      Int
+  month     Int
+  amountUsd Float
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, year, month])
+  @@index([year, month])
+}
+
+model MonthClose {
+  id     String @id @default(cuid())
+  userId String
+  year   Int
+  month  Int
+
+  incomeUsd             Float
+  expensesUsd           Float
+  investmentEarningsUsd Float
+  balanceUsd            Float
+  netWorthStartUsd      Float
+
+  closedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, year, month], name: "userId_year_month")
+}
+
+/* =========================================================
+   ✅ templates + planned/drafts
+========================================================= */
+
+model ExpenseTemplate {
+  id               String      @id @default(uuid())
+  userId           String
+  expenseType      ExpenseType
+  categoryId       String
+  description      String
+  defaultAmountUsd Float?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  planned PlannedExpense[]
+
+  @@index([userId])
+  @@unique([userId, expenseType, categoryId, description])
+}
+
+model PlannedExpense {
+  id          String      @id @default(uuid())
+  userId      String
+  year        Int
+  month       Int
+
+  templateId  String?
+  template    ExpenseTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+
+  expenseType ExpenseType
+  categoryId  String
+  description String
+
+  amountUsd   Float?
+  isConfirmed Boolean @default(false)
+
+  // Back relation to created real expense (after confirm)
+  expense     Expense?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@index([userId, year, month])
+  @@unique([userId, year, month, templateId])
+}
+
+model MonthlyBudget {
+  id               String   @id @default(uuid())
+  userId           String
+  year             Int
+  month            Int
+  otherExpensesUsd Float   @default(0)
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, year, month], name: "userId_year_month")
+  @@index([year, month])
+}
+model EmailVerificationCode {
+  id        String   @id @default(uuid())
+  email     String
+  codeHash  String
+  purpose   String   // "signup" (y futuro "reset_password" si querés)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  usedAt    DateTime?
+
+  attempts  Int      @default(0)
+  ip        String?
+  userAgent String?
+
+  @@index([email, purpose])
+  @@index([expiresAt])
+}
