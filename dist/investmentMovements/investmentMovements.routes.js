@@ -1,0 +1,11 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const requireAuth_1 = require("../middlewares/requireAuth");
+const investmentMovements_controller_1 = require("./investmentMovements.controller");
+const router = (0, express_1.Router)();
+router.get("/", requireAuth_1.requireAuth, investmentMovements_controller_1.listInvestmentMovements);
+router.post("/", requireAuth_1.requireAuth, investmentMovements_controller_1.createInvestmentMovement);
+router.put("/:id", requireAuth_1.requireAuth, investmentMovements_controller_1.updateInvestmentMovement);
+router.delete("/:id", requireAuth_1.requireAuth, investmentMovements_controller_1.deleteInvestmentMovement);
+exports.default = router;

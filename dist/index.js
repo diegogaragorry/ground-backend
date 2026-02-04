@@ -1,0 +1,30 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = __importDefault(require("express"));
+const cors_1 = __importDefault(require("cors"));
+const auth_routes_1 = __importDefault(require("./auth/auth.routes"));
+const income_routes_1 = __importDefault(require("./income/income.routes"));
+const expensePlans_routes_1 = __importDefault(require("./expensePlans/expensePlans.routes"));
+const budgets_routes_1 = __importDefault(require("./budgets/budgets.routes"));
+const expenses_routes_1 = __importDefault(require("./expenses/expenses.routes"));
+const categories_routes_1 = __importDefault(require("./categories/categories.routes"));
+const investments_routes_1 = __importDefault(require("./investments/investments.routes"));
+const networth_routes_1 = __importDefault(require("./networth/networth.routes"));
+const app = (0, express_1.default)();
+app.use((0, cors_1.default)());
+app.use(express_1.default.json());
+app.get("/", (_req, res) => res.json({ ok: true }));
+app.use("/auth", auth_routes_1.default);
+app.use("/income", income_routes_1.default);
+app.use("/expensePlans", expensePlans_routes_1.default);
+app.use("/budgets", budgets_routes_1.default);
+app.use("/expenses", expenses_routes_1.default);
+app.use("/categories", categories_routes_1.default);
+app.use("/investments", investments_routes_1.default);
+app.use("/networth", networth_routes_1.default);
+app.listen(3000, () => {
+    console.log("Server running on port 3000");
+});
