@@ -12,6 +12,10 @@ function parseExpenseType(v) {
 function serverYear() {
     return new Date().getUTCFullYear();
 }
+function paramId(params) {
+    const v = params.id;
+    return Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
+}
 async function openMonthsForYear(userId, year) {
     const closes = await prisma_1.prisma.monthClose.findMany({
         where: { userId, year },
@@ -55,7 +59,7 @@ const createCategory = async (req, res) => {
 exports.createCategory = createCategory;
 const updateCategory = async (req, res) => {
     const userId = req.userId;
-    const id = String(req.params.id ?? "");
+    const id = paramId(req.params);
     const nameRaw = req.body?.name;
     const expenseTypeRaw = req.body?.expenseType;
     if (!id)
@@ -133,7 +137,7 @@ const updateCategory = async (req, res) => {
 exports.updateCategory = updateCategory;
 const deleteCategory = async (req, res) => {
     const userId = req.userId;
-    const id = req.params.id;
+    const id = paramId(req.params);
     const category = await prisma_1.prisma.category.findFirst({ where: { id, userId } });
     if (!category)
         return res.status(404).json({ error: "Category not found" });

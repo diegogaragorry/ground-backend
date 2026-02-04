@@ -3,17 +3,26 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.closeSnapshotForMonth = exports.upsertSnapshotForMonth = exports.listSnapshotsByYear = void 0;
 const prisma_1 = require("../lib/prisma");
 const fx_1 = require("../utils/fx");
+function paramId(params) {
+    const v = params.id;
+    return Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
+}
+function queryYear(query) {
+    const v = query.year;
+    const y = Array.isArray(v) ? v[0] : v;
+    return Number(y);
+}
 function parseYearMonthParams(params) {
-    const year = Number(params.year);
-    const month = Number(params.month);
+    const year = Number(Array.isArray(params?.year) ? params.year[0] : params?.year);
+    const month = Number(Array.isArray(params?.month) ? params.month[0] : params?.month);
     if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12)
         return null;
     return { year, month };
 }
 const listSnapshotsByYear = async (req, res) => {
     const userId = req.userId;
-    const investmentId = req.params.id;
-    const year = Number(req.query.year);
+    const investmentId = paramId(req.params);
+    const year = queryYear(req.query);
     if (!Number.isInteger(year)) {
         return res.status(400).json({ error: "Provide ?year=YYYY" });
     }
@@ -56,7 +65,7 @@ const listSnapshotsByYear = async (req, res) => {
 exports.listSnapshotsByYear = listSnapshotsByYear;
 const upsertSnapshotForMonth = async (req, res) => {
     const userId = req.userId;
-    const investmentId = req.params.id;
+    const investmentId = paramId(req.params);
     const ym = parseYearMonthParams(req.params);
     const { closingCapital, usdUyuRate } = req.body ?? {};
     if (!ym)
@@ -79,11 +88,12 @@ const upsertSnapshotForMonth = async (req, res) => {
     if (existing?.isClosed) {
         return res.status(409).json({ error: "Month is closed" });
     }
+    const currencyId = investment.currencyId ?? "USD";
     let fx;
     try {
         fx = (0, fx_1.toUsd)({
             amount: closingCapital,
-            currencyId: investment.currencyId,
+            currencyId,
             usdUyuRate,
         });
     }
@@ -126,7 +136,7 @@ const upsertSnapshotForMonth = async (req, res) => {
 exports.upsertSnapshotForMonth = upsertSnapshotForMonth;
 const closeSnapshotForMonth = async (req, res) => {
     const userId = req.userId;
-    const investmentId = req.params.id;
+    const investmentId = paramId(req.params);
     const ym = parseYearMonthParams(req.params);
     if (!ym)
         return res.status(400).json({ error: "Invalid year/month" });

@@ -3,6 +3,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.deleteExpense = exports.updateExpense = exports.expensesSummary = exports.listExpensesByMonth = exports.createExpense = void 0;
 const prisma_1 = require("../lib/prisma");
 const fx_1 = require("../utils/fx");
+function paramId(params) {
+    const v = params.id;
+    return Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
+}
 function parseYearMonth(query) {
     const year = Number(query.year);
     const month = Number(query.month);
@@ -134,7 +138,7 @@ const expensesSummary = async (req, res) => {
 exports.expensesSummary = expensesSummary;
 const updateExpense = async (req, res) => {
     const userId = req.userId;
-    const id = req.params.id;
+    const id = paramId(req.params);
     const existing = await prisma_1.prisma.expense.findFirst({ where: { id, userId } });
     if (!existing)
         return res.status(404).json({ error: "Expense not found" });
@@ -213,7 +217,7 @@ const updateExpense = async (req, res) => {
 exports.updateExpense = updateExpense;
 const deleteExpense = async (req, res) => {
     const userId = req.userId;
-    const id = req.params.id;
+    const id = paramId(req.params);
     const existing = await prisma_1.prisma.expense.findFirst({ where: { id, userId } });
     if (!existing)
         return res.status(404).json({ error: "Expense not found" });
