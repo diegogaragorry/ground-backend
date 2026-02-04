@@ -84,10 +84,11 @@ export const registerRequestCode = async (req: Request, res: Response) => {
 
     return res.status(200).json({ ok: true });
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     console.error("registerRequestCode error:", err);
     return res.status(500).json({
       error: "Could not send verification code",
-      detail: process.env.NODE_ENV === "development" ? String((err as Error).message) : undefined,
+      detail: message, // incluir siempre para depurar (quitar en prod si no querés exponer)
     });
   }
 };
