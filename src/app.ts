@@ -28,10 +28,12 @@ import plannedExpensesRoutes from "./plannedExpenses/plannedExpenses.routes";
 
 const app = express();
 
-// ✅ CORS: orígenes permitidos (Vercel + localhost). Lista explícita evita fallos de preflight en Railway.
+// ✅ CORS: orígenes permitidos (Vercel, ground.finance, localhost).
 const allowedOrigins = [
   /^https:\/\/[\w.-]+\.vercel\.app$/,   // cualquier deployment Vercel (prod + preview)
-  /^https?:\/\/localhost(:\d+)?$/,       // dev local
+  /^https:\/\/ground\.finance$/,        // producción
+  /^https:\/\/www\.ground\.finance$/,   // www
+  /^https?:\/\/localhost(:\d+)?$/,      // dev local
 ];
 
 app.use(
