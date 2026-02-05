@@ -289,25 +289,43 @@ export const forgotPasswordVerify = async (req: Request, res: Response) => {
  * POST /auth/login
  */
 export const login = async (req: Request, res: Response) => {
-  const email = normalizeEmail(req.body?.email);
-  const password = String(req.body?.password || "");
+  try {
+    const email = normalizeEmail(req.body?.email);
+    const password = String(req.body?.password || "");
 
-  if (!email || !password) {
-    return res.status(400).json({ error: "email and password are required" });
+    if (!email || !password) {
+      return res.status(400).json({ error: "email and password are required" });
+    }
+
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret || jwtSecret.length < 16) {
+      console.error("JWT_SECRET is missing or too short. Set it in .env");
+      return res.status(500).json({
+        error: "Server misconfiguration",
+        detail: "JWT_SECRET missing or too short. Add JWT_SECRET=tu-secreto-largo to ground-backend/.env",
+      });
+    }
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+
+    const ok = await bcrypt.compare(password, user.password);
+    if (!ok) return res.status(401).json({ error: "Invalid credentials" });
+
+    const token = jwt.sign({ userId: user.id }, jwtSecret, { expiresIn: "1d" });
+
+    return res.json({
+      token,
+      user: { id: user.id, email: user.email, role: user.role },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("Login error:", err);
+    return res.status(500).json({
+      error: "Internal Server Error",
+      detail: message,
+    });
   }
-
-  const user = await prisma.user.findUnique({ where: { email } });
-  if (!user) return res.status(401).json({ error: "Invalid credentials" });
-
-  const ok = await bcrypt.compare(password, user.password);
-  if (!ok) return res.status(401).json({ error: "Invalid credentials" });
-
-  const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET as string, { expiresIn: "1d" });
-
-  return res.json({
-    token,
-    user: { id: user.id, email: user.email, role: user.role },
-  });
 };
 
 /**

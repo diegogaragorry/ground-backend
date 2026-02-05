@@ -1,5 +1,8 @@
+import path from "path";
 import dotenv from "dotenv";
-dotenv.config();
+
+// Cargar .env desde la raíz del backend (funciona aunque se ejecute desde otro directorio)
+dotenv.config({ path: path.resolve(__dirname, "..", ".env") });
 
 import express from "express";
 import cors from "cors";

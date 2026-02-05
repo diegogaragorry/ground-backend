@@ -1,3 +1,8 @@
+import path from "path";
+import dotenv from "dotenv";
+
+dotenv.config({ path: path.resolve(__dirname, "..", ".env") });
+
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
@@ -18,7 +23,10 @@ function n(s: string) {
 async function main() {
   // Tomamos el primer user (como venís trabajando con 1 usuario)
   const user = await prisma.user.findFirst();
-  if (!user) throw new Error("No users found. Create/register a user first.");
+  if (!user) {
+    console.log("No users found. Run the app and register; then run 'npm run seed' again to load investments.");
+    return;
+  }
 
   const baseYear = 2026;
   const baseMonth = 1;
@@ -77,32 +85,25 @@ async function main() {
           },
         });
 
-    const usdUyuRate =
-      r.currencyId === "UYU" ? r.capital / r.capitalUsd : null;
-
     await prisma.investmentSnapshot.upsert({
       where: {
-        userId_investmentId_year_month: {
-          userId: user.id,
+        investmentId_year_month: {
           investmentId: inv.id,
           year: baseYear,
           month: baseMonth,
         },
       },
       create: {
-        userId: user.id,
         investmentId: inv.id,
         year: baseYear,
         month: baseMonth,
-        closingCapital: r.capital,
-        closingCapitalUsd: r.capitalUsd,
-        usdUyuRate: usdUyuRate ?? undefined,
+        capital: r.capital,
+        capitalUsd: r.capitalUsd,
         isClosed: false,
       },
       update: {
-        closingCapital: r.capital,
-        closingCapitalUsd: r.capitalUsd,
-        usdUyuRate: usdUyuRate ?? undefined,
+        capital: r.capital,
+        capitalUsd: r.capitalUsd,
       },
     });
   }

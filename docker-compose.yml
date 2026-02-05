@@ -1,0 +1,17 @@
+# Postgres local para desarrollo. Levantar: docker compose up -d
+# Detener: docker compose down
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: ground
+    ports:
+      - "5432:5432"
+    volumes:
+      - ground_pg_data:/var/lib/postgresql/data
+
+volumes:
+  ground_pg_data:

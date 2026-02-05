@@ -9,7 +9,8 @@
     "start": "node dist/server.js",
     "start:migrate": "npx prisma migrate deploy && node dist/server.js",
     "migrate:deploy": "npx prisma migrate deploy",
-    "seed": "ts-node prisma/seed.ts"
+    "seed": "ts-node prisma/seed.ts",
+    "db:local": "npx prisma migrate deploy && npm run seed"
   },
   "keywords": [],
   "author": "",
