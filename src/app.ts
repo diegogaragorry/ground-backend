@@ -31,18 +31,16 @@ import plannedExpensesRoutes from "./plannedExpenses/plannedExpenses.routes";
 
 const app = express();
 
-// ✅ CORS: orígenes permitidos (Vercel, ground.finance, localhost).
+// ✅ CORS: orígenes permitidos (Vercel, ground.finance y subdominios, localhost).
 const allowedOrigins = [
-  /^https:\/\/[\w.-]+\.vercel\.app$/,   // cualquier deployment Vercel (prod + preview)
-  /^https:\/\/ground\.finance$/,        // producción
-  /^https:\/\/www\.ground\.finance$/,   // www
-  /^https?:\/\/localhost(:\d+)?$/,      // dev local
+  /^https:\/\/[\w.-]+\.vercel\.app$/,      // cualquier deployment Vercel (prod + preview)
+  /^https:\/\/([\w.-]+\.)?ground\.finance$/, // ground.finance, www.ground.finance, app.ground.finance, etc.
+  /^https?:\/\/localhost(:\d+)?$/,           // dev local
 ];
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Peticiones sin origin (ej. Postman, curl) o origen permitido
       if (!origin || allowedOrigins.some((re) => re.test(origin))) {
         callback(null, true);
       } else {
@@ -52,6 +50,7 @@ app.use(
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
+    optionsSuccessStatus: 204,
   })
 );
 
