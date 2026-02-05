@@ -1,28 +1,60 @@
 import nodemailer from "nodemailer";
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
-const EMAIL_FROM = process.env.EMAIL_FROM || "Ground <onboarding@resend.dev>";
+const EMAIL_FROM = process.env.EMAIL_FROM || "";
 
-// SMTP (solo si no usamos Resend)
 const SMTP_HOST = process.env.SMTP_HOST;
 const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
 const SMTP_USER = process.env.SMTP_USER;
 const SMTP_PASS = process.env.SMTP_PASS;
 
-const transporter =
-  SMTP_HOST && SMTP_USER && SMTP_PASS
-    ? nodemailer.createTransport({
-        host: SMTP_HOST,
-        port: SMTP_PORT,
-        secure: SMTP_PORT === 465,
-        auth: { user: SMTP_USER, pass: SMTP_PASS },
-      })
-    : null;
+const smtpConfigured = !!(SMTP_HOST && SMTP_USER && SMTP_PASS && EMAIL_FROM);
+const transporter = smtpConfigured
+  ? nodemailer.createTransport({
+      host: SMTP_HOST,
+      port: SMTP_PORT,
+      secure: SMTP_PORT === 465,
+      auth: { user: SMTP_USER, pass: SMTP_PASS },
+    })
+  : null;
+
+function isNetworkError(msg: string): boolean {
+  return (
+    /timeout|ENETUNREACH|ECONNREFUSED|ETIMEDOUT|Connection timeout/i.test(msg) || msg.includes("ECONNREFUSED")
+  );
+}
+
+function sendViaResend(recipient: string, subject: string, html: string, text: string): Promise<void> {
+  if (!RESEND_API_KEY) throw new Error("RESEND_API_KEY not set");
+  // Dominio verificado ground.finance por defecto; si EMAIL_FROM es Gmail/Yahoo usar dominio de prueba
+  const fromResend =
+    EMAIL_FROM && !EMAIL_FROM.includes("gmail.com") && !EMAIL_FROM.includes("yahoo.")
+      ? EMAIL_FROM
+      : "Ground <no-reply@ground.finance>";
+  return fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+    },
+    body: JSON.stringify({
+      from: fromResend,
+      to: [recipient],
+      subject,
+      html,
+      text,
+    }),
+  }).then(async (res) => {
+    const data = (await res.json()) as { message?: string };
+    if (!res.ok) throw new Error(data.message || `Resend API ${res.status}`);
+  });
+}
 
 /**
  * Envía el código de verificación por email.
- * Si RESEND_API_KEY está definida, usa Resend (API HTTP, funciona en Railway).
- * Si no, usa SMTP (puede fallar por bloqueo de puertos en cloud).
+ * Prioridad: 1) Gmail/SMTP si está configurado (SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM).
+ *            2) Si SMTP falla por red (ej. Railway bloquea puerto 587), usa Resend si RESEND_API_KEY está definida.
+ *            3) Solo Resend si no hay SMTP.
  */
 export async function sendSignupCodeEmail(to: string, code: string) {
   const recipient = String(to || "").trim();
@@ -39,36 +71,26 @@ export async function sendSignupCodeEmail(to: string, code: string) {
     </div>
   `;
 
-  if (RESEND_API_KEY) {
-    // Resend solo permite "from" verificado: usar dominio de prueba o dominio propio verificado en resend.com/domains
-    const fromResend = EMAIL_FROM.includes("resend.dev") ? EMAIL_FROM : "Ground <onboarding@resend.dev>";
-    const res = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${RESEND_API_KEY}`,
-      },
-      body: JSON.stringify({
-        from: fromResend,
-        to: [recipient],
-        subject,
-        html,
-        text,
-      }),
-    });
-    const data = (await res.json()) as { id?: string; message?: string };
-    if (!res.ok) {
-      throw new Error(data.message || `Resend API ${res.status}`);
+  if (transporter) {
+    try {
+      await transporter.sendMail({ from: EMAIL_FROM, to: recipient, subject, text, html });
+      return;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (isNetworkError(msg) && RESEND_API_KEY) {
+        await sendViaResend(recipient, subject, html, text);
+        return;
+      }
+      throw err;
     }
-    return;
   }
 
-  if (transporter) {
-    await transporter.sendMail({ from: EMAIL_FROM, to: recipient, subject, text, html });
+  if (RESEND_API_KEY) {
+    await sendViaResend(recipient, subject, html, text);
     return;
   }
 
   throw new Error(
-    "No email config. Set RESEND_API_KEY (recommended on Railway) or SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM."
+    "No email config. Set SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM (Gmail) or RESEND_API_KEY (Resend)."
   );
 }
