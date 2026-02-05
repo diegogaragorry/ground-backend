@@ -81,7 +81,7 @@ export const registerRequestCode = async (req: Request, res: Response) => {
         // ignore
       }
       return res.status(500).json({
-        error: "Failed to send email. Check SMTP config (SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM).",
+        error: "Failed to send email. Check SMTP (Gmail) or Resend config.",
         detail: msg,
       });
     }
@@ -181,8 +181,12 @@ export const registerVerify = async (req: Request, res: Response) => {
       user: { id: user.id, email: user.email, role: user.role },
     });
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     console.error("Register verify error:", err);
-    return res.status(500).json({ error: "Error creating user" });
+    return res.status(500).json({
+      error: "Error creating user",
+      detail: message,
+    });
   }
 };
 
