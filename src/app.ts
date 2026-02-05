@@ -52,20 +52,18 @@ function isOriginAllowed(origin: string | undefined): boolean {
   return false;
 }
 
-// ✅ Responder preflight OPTIONS con middleware (Express 5 no acepta app.options("*", ...)).
+// ✅ Preflight OPTIONS: siempre reflejar Origin para que el navegador reciba el header.
+// El POST/GET siguen protegidos por cors() más abajo (solo orígenes permitidos).
 app.use((req, res, next) => {
   if (req.method === "OPTIONS") {
     const origin = req.headers.origin;
-    // Solo reflejar Origin si está en la lista; para preflight es crítico que el header esté presente.
-    if (origin && isOriginAllowed(origin)) {
-      res.setHeader("Access-Control-Allow-Origin", origin);
-    }
+    if (origin) res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Access-Control-Max-Age", "86400");
     res.status(204).end();
-    return; // no llamar next() para no seguir la cadena
+    return;
   }
   next();
 });
