@@ -5,7 +5,7 @@ import crypto from "crypto";
 import { prisma } from "../lib/prisma";
 import type { AuthRequest } from "../middlewares/requireAuth";
 import { bootstrapUserData } from "./bootstrapUserData";
-import { sendSignupCodeEmail } from "../lib/mailer";
+import { sendSignupCodeEmail, sendPasswordResetCodeEmail } from "../lib/mailer";
 
 function normalizeEmail(email: string) {
   return String(email || "").trim().toLowerCase();
@@ -188,6 +188,123 @@ export const registerVerify = async (req: Request, res: Response) => {
       detail: message,
     });
   }
+};
+
+/**
+ * POST /auth/forgot-password/request-code
+ * Body: { email }
+ */
+export const forgotPasswordRequestCode = async (req: Request, res: Response) => {
+  try {
+    const email = normalizeEmail(req.body?.email);
+    if (!email) return res.status(400).json({ error: "email is required" });
+
+    const user = await prisma.user.findUnique({ where: { email } });
+    if (!user) return res.status(404).json({ error: "No account found with this email" });
+
+    const purpose = "password_reset";
+    const ip = getClientIp(req);
+    const userAgent = getUserAgent(req);
+
+    const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
+    const recentCount = await prisma.emailVerificationCode.count({
+      where: { email, purpose, createdAt: { gte: tenMinAgo } },
+    });
+    if (recentCount >= 3) {
+      return res.status(429).json({ error: "Too many requests. Try again later." });
+    }
+
+    const code = gen6();
+    const codeHash = hashCode(email, code);
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    const rec = await prisma.emailVerificationCode.create({
+      data: { email, codeHash, purpose, expiresAt, ip: ip ?? undefined, userAgent },
+    });
+
+    try {
+      await sendPasswordResetCodeEmail(email, code);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("sendPasswordResetCodeEmail error:", err);
+      try {
+        await prisma.emailVerificationCode.delete({ where: { id: rec.id } });
+      } catch {
+        // ignore
+      }
+      return res.status(500).json({
+        error: "Failed to send email.",
+        detail: msg,
+      });
+    }
+
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error("forgotPasswordRequestCode error:", err);
+    return res.status(500).json({ error: "Could not send reset code", detail: message });
+  }
+};
+
+/**
+ * POST /auth/forgot-password/verify
+ * Body: { email, code, newPassword }
+ */
+export const forgotPasswordVerify = async (req: Request, res: Response) => {
+  const email = normalizeEmail(req.body?.email);
+  const code = String(req.body?.code || "").trim();
+  const newPassword = String(req.body?.newPassword ?? req.body?.new_password ?? "");
+
+  if (!email || !code || !newPassword) {
+    return res.status(400).json({ error: "email, code and newPassword are required" });
+  }
+  if (newPassword.length < 8) {
+    return res.status(400).json({ error: "password must be at least 8 characters" });
+  }
+
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user) return res.status(404).json({ error: "No account found with this email" });
+
+  const purpose = "password_reset";
+  const now = new Date();
+
+  const latest = await prisma.emailVerificationCode.findFirst({
+    where: { email, purpose },
+    orderBy: { createdAt: "desc" },
+  });
+
+  if (!latest || latest.usedAt || latest.expiresAt <= now) {
+    return res.status(400).json({ error: "Invalid or expired code" });
+  }
+  if ((latest.attempts ?? 0) >= 5) {
+    return res.status(429).json({ error: "Too many attempts. Request a new code." });
+  }
+
+  const expectedHash = hashCode(email, code);
+  const a = Buffer.from(expectedHash);
+  const b = Buffer.from(latest.codeHash);
+  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+
+  if (!ok) {
+    await prisma.emailVerificationCode.update({
+      where: { id: latest.id },
+      data: { attempts: { increment: 1 } },
+    });
+    return res.status(400).json({ error: "Invalid or expired code" });
+  }
+
+  await prisma.emailVerificationCode.update({
+    where: { id: latest.id },
+    data: { usedAt: now },
+  });
+
+  const hashedPassword = await bcrypt.hash(newPassword, 10);
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { password: hashedPassword },
+  });
+
+  return res.status(200).json({ ok: true });
 };
 
 /**

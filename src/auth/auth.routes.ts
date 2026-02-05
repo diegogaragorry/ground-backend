@@ -1,5 +1,12 @@
 import { Router } from "express";
-import { login, me, registerRequestCode, registerVerify } from "./auth.controller";
+import {
+  login,
+  me,
+  registerRequestCode,
+  registerVerify,
+  forgotPasswordRequestCode,
+  forgotPasswordVerify,
+} from "./auth.controller";
 import { requireAuth } from "../middlewares/requireAuth";
 
 const router = Router();
@@ -7,6 +14,10 @@ const router = Router();
 // ✅ Nuevo flujo de registro con código
 router.post("/register/request-code", registerRequestCode);
 router.post("/register/verify", registerVerify);
+
+// ✅ Forgot password
+router.post("/forgot-password/request-code", forgotPasswordRequestCode);
+router.post("/forgot-password/verify", forgotPasswordVerify);
 
 // ✅ Login / Me
 router.post("/login", login);

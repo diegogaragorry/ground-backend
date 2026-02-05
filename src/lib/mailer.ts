@@ -94,3 +94,45 @@ export async function sendSignupCodeEmail(to: string, code: string) {
     "No email config. Set SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM (Gmail) or RESEND_API_KEY (Resend)."
   );
 }
+
+/**
+ * Envía el código para resetear contraseña (misma infra que signup).
+ */
+export async function sendPasswordResetCodeEmail(to: string, code: string) {
+  const recipient = String(to || "").trim();
+  if (!recipient) throw new Error("Missing recipient email (to)");
+
+  const subject = "Reset your Ground password";
+  const text = `Your password reset code is: ${code}\n\nIt expires in 10 minutes.`;
+  const html = `
+    <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;line-height:1.4">
+      <h2 style="margin:0 0 12px">Reset your password</h2>
+      <p style="margin:0 0 10px">Your password reset code is:</p>
+      <div style="font-size:28px;font-weight:800;letter-spacing:6px;margin:10px 0 18px">${code}</div>
+      <p style="margin:0;color:#555">This code expires in 10 minutes. If you didn't request this, you can ignore this email.</p>
+    </div>
+  `;
+
+  if (transporter) {
+    try {
+      await transporter.sendMail({ from: EMAIL_FROM, to: recipient, subject, text, html });
+      return;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (isNetworkError(msg) && RESEND_API_KEY) {
+        await sendViaResend(recipient, subject, html, text);
+        return;
+      }
+      throw err;
+    }
+  }
+
+  if (RESEND_API_KEY) {
+    await sendViaResend(recipient, subject, html, text);
+    return;
+  }
+
+  throw new Error(
+    "No email config. Set SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM (Gmail) or RESEND_API_KEY (Resend)."
+  );
+}
