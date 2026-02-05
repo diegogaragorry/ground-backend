@@ -12,8 +12,9 @@ dns.setDefaultResultOrder("ipv4first");
 import app from "./app";
 
 const PORT = Number(process.env.PORT) || 3000;
+const HOST = process.env.HOST || "0.0.0.0"; // 0.0.0.0 para que Railway/proxy pueda conectar
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+app.listen(PORT, HOST, () => {
+  console.log(`Server running on ${HOST}:${PORT}`);
   console.log(`Backend URL: http://localhost:${PORT}`);
 });
