@@ -42,17 +42,20 @@ function isOriginAllowed(origin: string | undefined): boolean {
   return !origin || allowedOrigins.some((re) => re.test(origin));
 }
 
-// ✅ Responder preflight OPTIONS explícitamente (evita 502 con el proxy de Railway).
-app.options("*", (req, res) => {
-  const origin = req.headers.origin;
-  if (origin && isOriginAllowed(origin)) {
-    res.setHeader("Access-Control-Allow-Origin", origin);
+// ✅ Responder preflight OPTIONS con middleware (Express 5 no acepta app.options("*", ...)).
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") {
+    const origin = req.headers.origin;
+    if (origin && isOriginAllowed(origin)) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
+    }
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Access-Control-Max-Age", "86400");
+    return res.status(204).end();
   }
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-  res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Max-Age", "86400");
-  res.status(204).end();
+  next();
 });
 
 app.use(
