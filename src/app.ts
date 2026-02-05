@@ -38,10 +38,27 @@ const allowedOrigins = [
   /^https?:\/\/localhost(:\d+)?$/,           // dev local
 ];
 
+function isOriginAllowed(origin: string | undefined): boolean {
+  return !origin || allowedOrigins.some((re) => re.test(origin));
+}
+
+// ✅ Responder preflight OPTIONS explícitamente (evita 502 con el proxy de Railway).
+app.options("*", (req, res) => {
+  const origin = req.headers.origin;
+  if (origin && isOriginAllowed(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+  res.setHeader("Access-Control-Max-Age", "86400");
+  res.status(204).end();
+});
+
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.some((re) => re.test(origin))) {
+      if (isOriginAllowed(origin)) {
         callback(null, true);
       } else {
         callback(null, false);
