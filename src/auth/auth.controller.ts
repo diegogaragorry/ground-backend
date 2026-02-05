@@ -59,7 +59,7 @@ export const registerRequestCode = async (req: Request, res: Response) => {
     const codeHash = hashCode(email, code);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    const rec = await prisma.emailVerificationCode.create({
+    await prisma.emailVerificationCode.create({
       data: {
         email,
         codeHash,
@@ -70,21 +70,10 @@ export const registerRequestCode = async (req: Request, res: Response) => {
       },
     });
 
-    try {
-      await sendSignupCodeEmail(email, code);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("sendSignupCodeEmail error:", err);
-      try {
-        await prisma.emailVerificationCode.delete({ where: { id: rec.id } });
-      } catch {
-        // ignore
-      }
-      return res.status(500).json({
-        error: "Failed to send email. Check SMTP (Gmail) or Resend config.",
-        detail: msg,
-      });
-    }
+    // Responder al instante; enviar email en segundo plano (evita 1–2 min de "Sending...")
+    sendSignupCodeEmail(email, code).catch((err) => {
+      console.error("sendSignupCodeEmail background error:", err);
+    });
 
     return res.status(200).json({ ok: true });
   } catch (err) {
@@ -218,25 +207,14 @@ export const forgotPasswordRequestCode = async (req: Request, res: Response) => 
     const codeHash = hashCode(email, code);
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    const rec = await prisma.emailVerificationCode.create({
+    await prisma.emailVerificationCode.create({
       data: { email, codeHash, purpose, expiresAt, ip: ip ?? undefined, userAgent },
     });
 
-    try {
-      await sendPasswordResetCodeEmail(email, code);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("sendPasswordResetCodeEmail error:", err);
-      try {
-        await prisma.emailVerificationCode.delete({ where: { id: rec.id } });
-      } catch {
-        // ignore
-      }
-      return res.status(500).json({
-        error: "Failed to send email.",
-        detail: msg,
-      });
-    }
+    // Responder al instante; enviar email en segundo plano
+    sendPasswordResetCodeEmail(email, code).catch((err) => {
+      console.error("sendPasswordResetCodeEmail background error:", err);
+    });
 
     return res.status(200).json({ ok: true });
   } catch (err) {
