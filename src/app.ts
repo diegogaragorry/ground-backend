@@ -33,19 +33,30 @@ const app = express();
 
 // ✅ CORS: orígenes permitidos (Vercel, ground.finance y subdominios, localhost).
 const allowedOrigins = [
-  /^https:\/\/[\w.-]+\.vercel\.app$/,      // cualquier deployment Vercel (prod + preview)
-  /^https:\/\/([\w.-]+\.)?ground\.finance$/, // ground.finance, www.ground.finance, app.ground.finance, etc.
-  /^https?:\/\/localhost(:\d+)?$/,           // dev local
+  /^https:\/\/[\w.-]+\.vercel\.app\/?$/,       // cualquier deployment Vercel (prod + preview)
+  /^https:\/\/([\w.-]+\.)?ground\.finance\/?$/, // ground.finance, www.ground.finance, con o sin /
+  /^https?:\/\/localhost(:\d+)?\/?$/,           // dev local
 ];
 
 function isOriginAllowed(origin: string | undefined): boolean {
-  return !origin || allowedOrigins.some((re) => re.test(origin));
+  if (!origin) return true;
+  if (allowedOrigins.some((re) => re.test(origin))) return true;
+  // Fallback: si el host contiene ground.finance o vercel.app, permitir (evita bloqueos por variantes de URL).
+  try {
+    const u = new URL(origin);
+    if (u.hostname.endsWith("ground.finance") || u.hostname.endsWith("vercel.app")) return true;
+    if (u.hostname === "localhost") return true;
+  } catch {
+    /* ignore */
+  }
+  return false;
 }
 
 // ✅ Responder preflight OPTIONS con middleware (Express 5 no acepta app.options("*", ...)).
 app.use((req, res, next) => {
   if (req.method === "OPTIONS") {
     const origin = req.headers.origin;
+    // Solo reflejar Origin si está en la lista; para preflight es crítico que el header esté presente.
     if (origin && isOriginAllowed(origin)) {
       res.setHeader("Access-Control-Allow-Origin", origin);
     }
@@ -53,7 +64,8 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Access-Control-Max-Age", "86400");
-    return res.status(204).end();
+    res.status(204).end();
+    return; // no llamar next() para no seguir la cadena
   }
   next();
 });
