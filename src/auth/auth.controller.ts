@@ -173,6 +173,17 @@ export const registerVerify = async (req: Request, res: Response) => {
       },
     });
 
+    // Registrar primer ingreso a la app (igual que en login, para que aparezca en Admin → Últimos ingresos)
+    const ip = getClientIp(req);
+    const userAgent = getUserAgent(req);
+    await prisma.loginLog.create({
+      data: {
+        userId: user.id,
+        ip: ip ?? undefined,
+        userAgent: userAgent || undefined,
+      },
+    });
+
     const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET as string, { expiresIn: "1d" });
 
     return res.status(201).json({
