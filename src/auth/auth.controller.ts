@@ -332,6 +332,17 @@ export const login = async (req: Request, res: Response) => {
     const ok = await bcrypt.compare(password, user.password);
     if (!ok) return res.status(401).json({ error: "Invalid credentials" });
 
+    // Registrar ingreso a la app (para Admin → Actividad reciente)
+    const ip = getClientIp(req);
+    const userAgent = getUserAgent(req);
+    await prisma.loginLog.create({
+      data: {
+        userId: user.id,
+        ip: ip ?? undefined,
+        userAgent: userAgent || undefined,
+      },
+    });
+
     const token = jwt.sign({ userId: user.id }, jwtSecret, { expiresIn: "1d" });
 
     return res.json({

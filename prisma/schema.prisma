@@ -36,10 +36,24 @@ model User {
   periods      Period[]
   expensePlans ExpensePlan[]
   monthCloses  MonthClose[]
+  loginLogs    LoginLog[]
 
   expenseTemplates ExpenseTemplate[]
   plannedExpenses  PlannedExpense[]
   monthlyBudgets   MonthlyBudget[]
+}
+
+model LoginLog {
+  id        String   @id @default(uuid())
+  userId    String
+  loggedAt  DateTime @default(now())
+  ip        String?
+  userAgent String?  @db.VarChar(500)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([loggedAt])
 }
 
 model Category {
