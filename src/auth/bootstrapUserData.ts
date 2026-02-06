@@ -3,12 +3,12 @@ import { prisma } from "../lib/prisma";
 import { DEFAULT_TEMPLATES } from "./defaultTemplates";
 
 export async function bootstrapUserData(userId: string) {
-  // 1. categorías únicas
+  // 1. categorías únicas (con nameKey para i18n en frontend)
   const categories = Array.from(
     new Map(
       DEFAULT_TEMPLATES.map(t => [
         `${t.category}|${t.type}`,
-        { name: t.category, expenseType: t.type },
+        { name: t.category, expenseType: t.type, nameKey: t.categoryKey },
       ])
     ).values()
   );
@@ -21,6 +21,7 @@ export async function bootstrapUserData(userId: string) {
           userId,
           name: c.name,
           expenseType: c.expenseType,
+          nameKey: c.nameKey,
         },
       })
     )
@@ -31,7 +32,7 @@ export async function bootstrapUserData(userId: string) {
     createdCategories.map(c => [`${c.name}|${c.expenseType}`, c.id])
   );
 
-  // 4. crear templates (sin PlannedExpense: los drafts solo aparecen para lo que el usuario elige en onboarding o añade en Admin)
+  // 4. crear templates (con descriptionKey para i18n en frontend)
   await prisma.$transaction(
     DEFAULT_TEMPLATES.map(t =>
       prisma.expenseTemplate.create({
@@ -39,6 +40,7 @@ export async function bootstrapUserData(userId: string) {
           userId,
           expenseType: t.type,
           description: t.description,
+          descriptionKey: t.descriptionKey,
           categoryId: categoryMap.get(`${t.category}|${t.type}`)!,
           defaultAmountUsd: null,
         },

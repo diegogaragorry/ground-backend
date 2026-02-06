@@ -65,6 +65,9 @@ model Category {
   // ✅ category belongs to fixed/variable group
   expenseType ExpenseType @default(VARIABLE)
 
+  // Optional i18n key for default categories (frontend uses t('categories.'+nameKey))
+  nameKey String?
+
   user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   expenses Expense[]
   budgets  Budget[]
@@ -272,6 +275,9 @@ model ExpenseTemplate {
   defaultAmountUsd Float?
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
+
+  // Optional i18n key for default template descriptions (frontend uses t('templateDescriptions.'+descriptionKey))
+  descriptionKey String?
 
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
