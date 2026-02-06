@@ -9,11 +9,11 @@ function parseAmountUsd(v: any) {
   return Number.isFinite(n) ? n : null;
 }
 
-function serverYear() {
+export function serverYear() {
   return new Date().getUTCFullYear();
 }
 
-async function openMonthsForYear(userId: string, year: number) {
+export async function openMonthsForYear(userId: string, year: number) {
   // Mes cerrado = existe MonthClose para ese year+month
   const closes = await prisma.monthClose.findMany({
     where: { userId, year },
@@ -25,7 +25,7 @@ async function openMonthsForYear(userId: string, year: number) {
   return out;
 }
 
-async function ensurePlannedForTemplate(userId: string, year: number, template: { id: string; expenseType: any; categoryId: string; description: string; defaultAmountUsd: number | null }) {
+export async function ensurePlannedForTemplate(userId: string, year: number, template: { id: string; expenseType: any; categoryId: string; description: string; defaultAmountUsd: number | null }) {
   const monthsOpen = await openMonthsForYear(userId, year);
 
   // crea los que faltan (no pisa ediciones manuales)
@@ -137,6 +137,32 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
   } catch (e: any) {
     const msg = String(e?.message ?? "");
     if (msg.toLowerCase().includes("unique")) {
+      // Template ya existe (bootstrap): actualizar monto si vino en el request y sincronizar drafts
+      const existing = await prisma.expenseTemplate.findFirst({
+        where: { userId, categoryId, description },
+        include: { category: true },
+      });
+      if (existing) {
+        const templatePayload = {
+          id: existing.id,
+          expenseType: existing.expenseType,
+          categoryId: existing.categoryId,
+          description: existing.description,
+          defaultAmountUsd: defaultAmountUsd ?? existing.defaultAmountUsd ?? null,
+        };
+        if (defaultAmountUsd !== undefined && defaultAmountUsd !== null) {
+          await prisma.expenseTemplate.update({
+            where: { id: existing.id },
+            data: { defaultAmountUsd },
+          });
+        }
+        await syncPlannedAfterTemplateUpdate(userId, year, templatePayload);
+        const updated = await prisma.expenseTemplate.findUnique({
+          where: { id: existing.id },
+          include: { category: true },
+        });
+        return res.status(200).json(updated ?? existing);
+      }
       return res.status(409).json({ error: "Template already exists (unique constraint)" });
     }
     return res.status(500).json({ error: "Error creating template" });

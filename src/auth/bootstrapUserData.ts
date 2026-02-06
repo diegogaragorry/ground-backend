@@ -31,7 +31,7 @@ export async function bootstrapUserData(userId: string) {
     createdCategories.map(c => [`${c.name}|${c.expenseType}`, c.id])
   );
 
-  // 4. crear templates
+  // 4. crear templates (sin PlannedExpense: los drafts solo aparecen para lo que el usuario elige en onboarding o añade en Admin)
   await prisma.$transaction(
     DEFAULT_TEMPLATES.map(t =>
       prisma.expenseTemplate.create({
