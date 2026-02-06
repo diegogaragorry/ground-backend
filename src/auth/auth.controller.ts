@@ -336,10 +336,25 @@ export const me = async (req: AuthRequest, res: Response) => {
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, email: true, role: true, createdAt: true },
+    select: { id: true, email: true, role: true, createdAt: true, forceOnboardingNextLogin: true },
   });
 
   if (!user) return res.status(404).json({ error: "User not found" });
 
   return res.json(user);
+};
+
+/**
+ * PATCH /auth/me — clear forceOnboardingNextLogin (used after showing onboarding)
+ */
+export const patchMe = async (req: AuthRequest, res: Response) => {
+  const userId = req.userId!;
+  const body = req.body as { forceOnboardingNextLogin?: boolean } | undefined;
+  if (body?.forceOnboardingNextLogin === false) {
+    await prisma.user.update({
+      where: { id: userId },
+      data: { forceOnboardingNextLogin: false },
+    });
+  }
+  return res.status(204).end();
 };
