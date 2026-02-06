@@ -157,9 +157,10 @@ export const updateOtherExpenses = async (req: AuthRequest, res: Response) => {
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
     return res.status(400).json({ error: "Invalid year or month" });
   }
-  if (!Number.isFinite(value) || value < 0) {
+  if (!Number.isFinite(value)) {
     return res.status(400).json({ error: "Invalid otherExpensesUsd" });
   }
+  // permitimos negativos (ej. ajustes o ingresos extra contabilizados como "otros")
 
   const closed = await prisma.monthClose.findFirst({
     where: { userId, year, month },

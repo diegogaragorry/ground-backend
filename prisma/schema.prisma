@@ -233,6 +233,7 @@ model MonthClose {
   investmentEarningsUsd Float
   balanceUsd            Float
   netWorthStartUsd      Float
+  netWorthEndUsd        Float?  // patrimonio inicio mes siguiente (para balance real)
 
   closedAt DateTime @default(now())
 
