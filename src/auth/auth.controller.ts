@@ -55,6 +55,16 @@ export const registerRequestCode = async (req: Request, res: Response) => {
       return res.status(429).json({ error: "Too many requests. Try again later." });
     }
 
+    // No crear ni enviar otro código si ya se envió uno hace menos de 2 min (evita duplicados cuando el mail tarda o falla)
+    const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000);
+    const latestSent = await prisma.emailVerificationCode.findFirst({
+      where: { email, purpose, createdAt: { gte: twoMinAgo } },
+      orderBy: { createdAt: "desc" },
+    });
+    if (latestSent) {
+      return res.status(200).json({ ok: true, alreadySent: true });
+    }
+
     const code = gen6();
     const codeHash = hashCode(email, code);
     const expiresAt = new Date(Date.now() + 20 * 60 * 1000); // 20 min
@@ -201,6 +211,16 @@ export const forgotPasswordRequestCode = async (req: Request, res: Response) => 
     });
     if (recentCount >= 3) {
       return res.status(429).json({ error: "Too many requests. Try again later." });
+    }
+
+    // No crear ni enviar otro código si ya se envió uno hace menos de 2 min
+    const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000);
+    const latestSent = await prisma.emailVerificationCode.findFirst({
+      where: { email, purpose, createdAt: { gte: twoMinAgo } },
+      orderBy: { createdAt: "desc" },
+    });
+    if (latestSent) {
+      return res.status(200).json({ ok: true, alreadySent: true });
     }
 
     const code = gen6();
