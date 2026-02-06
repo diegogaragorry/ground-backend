@@ -195,7 +195,10 @@ model Income {
   userId    String
   year      Int
   month     Int
-  amountUsd Float
+  amountUsd Float   // total = nominal + extraordinary - taxes (kept in sync)
+  nominalUsd         Float?  // ingresos nominales (ej. del wizard)
+  extraordinaryUsd   Float?  // ingresos extraordinarios
+  taxesUsd           Float?  // impuestos
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
