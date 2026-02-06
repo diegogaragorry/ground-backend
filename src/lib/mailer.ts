@@ -61,13 +61,13 @@ export async function sendSignupCodeEmail(to: string, code: string) {
   if (!recipient) throw new Error("Missing recipient email (to)");
 
   const subject = "Your Ground verification code";
-  const text = `Your Ground verification code is: ${code}\n\nIt expires in 10 minutes.`;
+  const text = `Your Ground verification code is: ${code}\n\nIt expires in 20 minutes.`;
   const html = `
     <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;line-height:1.4">
       <h2 style="margin:0 0 12px">Verify your email</h2>
       <p style="margin:0 0 10px">Your Ground verification code is:</p>
       <div style="font-size:28px;font-weight:800;letter-spacing:6px;margin:10px 0 18px">${code}</div>
-      <p style="margin:0;color:#555">This code expires in 10 minutes.</p>
+      <p style="margin:0;color:#555">This code expires in 20 minutes.</p>
     </div>
   `;
 
@@ -103,13 +103,13 @@ export async function sendPasswordResetCodeEmail(to: string, code: string) {
   if (!recipient) throw new Error("Missing recipient email (to)");
 
   const subject = "Reset your Ground password";
-  const text = `Your password reset code is: ${code}\n\nIt expires in 10 minutes.`;
+  const text = `Your password reset code is: ${code}\n\nIt expires in 20 minutes.`;
   const html = `
     <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;line-height:1.4">
       <h2 style="margin:0 0 12px">Reset your password</h2>
       <p style="margin:0 0 10px">Your password reset code is:</p>
       <div style="font-size:28px;font-weight:800;letter-spacing:6px;margin:10px 0 18px">${code}</div>
-      <p style="margin:0;color:#555">This code expires in 10 minutes. If you didn't request this, you can ignore this email.</p>
+      <p style="margin:0;color:#555">This code expires in 20 minutes. If you didn't request this, you can ignore this email.</p>
     </div>
   `;
 

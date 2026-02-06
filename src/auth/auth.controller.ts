@@ -57,7 +57,7 @@ export const registerRequestCode = async (req: Request, res: Response) => {
 
     const code = gen6();
     const codeHash = hashCode(email, code);
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + 20 * 60 * 1000); // 20 min
 
     await prisma.emailVerificationCode.create({
       data: {
@@ -205,7 +205,7 @@ export const forgotPasswordRequestCode = async (req: Request, res: Response) => 
 
     const code = gen6();
     const codeHash = hashCode(email, code);
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + 20 * 60 * 1000); // 20 min
 
     await prisma.emailVerificationCode.create({
       data: { email, codeHash, purpose, expiresAt, ip: ip ?? undefined, userAgent },
