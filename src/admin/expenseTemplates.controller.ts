@@ -211,6 +211,11 @@ export const updateExpenseTemplate = async (req: AuthRequest, res: Response) => 
     patch.defaultAmountUsd = parseAmountUsd(req.body.defaultAmountUsd);
   }
 
+  // showInExpenses: si true, la plantilla se muestra en Gastos (genera borradores)
+  if (req.body?.showInExpenses !== undefined) {
+    patch.showInExpenses = Boolean(req.body.showInExpenses);
+  }
+
   const year = serverYear();
 
   try {
@@ -220,14 +225,17 @@ export const updateExpenseTemplate = async (req: AuthRequest, res: Response) => 
       include: { category: true },
     });
 
-    // sync planned para meses abiertos del año corriente
-    await syncPlannedAfterTemplateUpdate(userId, year, {
+    // sync planned solo si la plantilla está visible en gastos; si pasa a true, generar borradores
+    if (updated.showInExpenses !== false) {
+      await syncPlannedAfterTemplateUpdate(userId, year, {
       id: updated.id,
       expenseType: updated.expenseType,
       categoryId: updated.categoryId,
       description: updated.description,
       defaultAmountUsd: updated.defaultAmountUsd ?? null,
     });
+    }
+    // Si showInExpenses pasó a false, no borramos planned existentes (quedan ocultos por filtro en list)
 
     res.json(updated);
   } catch (e: any) {
@@ -271,4 +279,32 @@ export const deleteExpenseTemplate = async (req: AuthRequest, res: Response) => 
   });
 
   res.status(204).send();
+};
+
+/**
+ * POST /admin/expenseTemplates/set-visibility
+ * Body: { visibleTemplateIds: string[] }
+ * Sets showInExpenses = true for those IDs, false for all other templates of the user.
+ * Used after onboarding wizard so Admin reflects which templates the user chose.
+ */
+export const setVisibilityToSelected = async (req: AuthRequest, res: Response) => {
+  const userId = req.userId!;
+  const visibleTemplateIds = req.body?.visibleTemplateIds;
+  if (!Array.isArray(visibleTemplateIds)) {
+    return res.status(400).json({ error: "visibleTemplateIds array is required" });
+  }
+  const ids = visibleTemplateIds.filter((id: unknown) => typeof id === "string") as string[];
+
+  if (ids.length > 0) {
+    await prisma.expenseTemplate.updateMany({
+      where: { userId, id: { in: ids } },
+      data: { showInExpenses: true },
+    });
+  }
+  await prisma.expenseTemplate.updateMany({
+    where: { userId, ...(ids.length > 0 ? { id: { notIn: ids } } : {}) },
+    data: { showInExpenses: false },
+  });
+
+  res.json({ ok: true });
 };

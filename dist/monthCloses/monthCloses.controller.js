@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.reopenMonth = exports.closeMonth = exports.listMonthCloses = void 0;
+exports.reopenMonth = exports.closeMonth = exports.listMonthCloses = exports.previewMonthClose = void 0;
 const prisma_1 = require("../lib/prisma");
 // helpers
 function parseYear(q) {
@@ -157,6 +157,89 @@ async function computeNetWorthSeriesUsd(userId, year) {
     });
     return { totalNW, portfolioNW, portfolioVariation };
 }
+/** Devuelve si la funcionalidad de cierre con balance real está habilitada (solo localhost o env). */
+function isRealBalanceCloseEnabled(req) {
+    return req.hostname === "localhost" || process.env.ENABLE_REAL_BALANCE_CLOSE === "true";
+}
+// Preview de cierre: balance real vs calculado y ajuste propuesto a "Otros gastos" (solo localhost)
+const previewMonthClose = async (req, res) => {
+    if (!isRealBalanceCloseEnabled(req)) {
+        return res.status(403).json({ error: "Preview de cierre solo disponible en localhost" });
+    }
+    const userId = req.userId;
+    const parsed = parseYearMonth(req.body ?? req.query ?? {});
+    if (!parsed)
+        return res.status(400).json({ error: "year and month (1-12) are required" });
+    const { year, month } = parsed;
+    const income = await prisma_1.prisma.income.findUnique({
+        where: { userId_year_month: { userId, year, month } },
+        select: { amountUsd: true },
+    });
+    const plan = await prisma_1.prisma.expensePlan.findUnique({
+        where: { userId_year_month: { userId, year, month } },
+        select: { amountUsd: true },
+    });
+    const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0));
+    const end = new Date(Date.UTC(year, month, 1, 0, 0, 0));
+    const expenseRows = await prisma_1.prisma.expense.findMany({
+        where: { userId, date: { gte: start, lt: end } },
+        select: { amountUsd: true },
+    });
+    const actualExpenses = expenseRows.reduce((acc, e) => acc + (e.amountUsd ?? 0), 0);
+    const incomeUsd = income?.amountUsd ?? 0;
+    const baseExpensesUsd = actualExpenses > 0 ? actualExpenses : (plan?.amountUsd ?? 0);
+    const monthlyBudget = await prisma_1.prisma.monthlyBudget.findUnique({
+        where: { userId_year_month: { userId, year, month } },
+        select: { otherExpensesUsd: true },
+    });
+    const otherExpensesCurrent = monthlyBudget?.otherExpensesUsd ?? 0;
+    const { totalNW, portfolioVariation } = await computeNetWorthSeriesUsd(userId, year);
+    const netWorthStartUsd = totalNW[month - 1] ?? 0;
+    let netWorthEndUsd;
+    if (month < 12) {
+        netWorthEndUsd = totalNW[month] ?? 0;
+    }
+    else {
+        const nextYear = await computeNetWorthSeriesUsd(userId, year + 1);
+        netWorthEndUsd = nextYear.totalNW[0] ?? 0;
+    }
+    const realBalanceUsd = netWorthEndUsd - netWorthStartUsd;
+    const mvRows = await prisma_1.prisma.investmentMovement.findMany({
+        where: {
+            investment: { userId, type: "PORTFOLIO" },
+            date: { gte: start, lt: end },
+        },
+        select: { type: true, amount: true, currencyId: true },
+    });
+    const flowsUsd = mvRows.reduce((acc, r) => {
+        if ((r.currencyId ?? "") !== "USD")
+            return acc;
+        const amt = Number(r.amount ?? 0);
+        if (r.type === "deposit")
+            return acc + amt;
+        if (r.type === "withdrawal")
+            return acc - amt;
+        return acc;
+    }, 0);
+    const variation = portfolioVariation[month - 1] ?? 0;
+    const investmentEarningsUsd = variation - flowsUsd;
+    const budgetBalanceUsd = incomeUsd - baseExpensesUsd - otherExpensesCurrent + investmentEarningsUsd;
+    const otherExpensesProposed = incomeUsd + investmentEarningsUsd - realBalanceUsd - baseExpensesUsd;
+    const diff = Math.abs(realBalanceUsd - budgetBalanceUsd);
+    const message = diff < 0.01
+        ? "El balance real y el calculado coinciden. No se ajustará Otros gastos."
+        : `Balance real: ${realBalanceUsd.toFixed(2)} USD. Balance calculado (presupuesto): ${budgetBalanceUsd.toFixed(2)} USD. Se ajustará "Otros gastos" de ${otherExpensesCurrent.toFixed(2)} a ${otherExpensesProposed.toFixed(2)} USD para que cierre. ¿Confirmar cierre?`;
+    res.json({
+        realBalanceUsd,
+        budgetBalanceUsd,
+        otherExpensesCurrent,
+        otherExpensesProposed,
+        netWorthStartUsd,
+        netWorthEndUsd,
+        message,
+    });
+};
+exports.previewMonthClose = previewMonthClose;
 const listMonthCloses = async (req, res) => {
     const userId = req.userId;
     const year = parseYear(req.query);
@@ -170,79 +253,125 @@ const listMonthCloses = async (req, res) => {
 };
 exports.listMonthCloses = listMonthCloses;
 // cierra un mes: guarda snapshot "lockeado" del budget para ese mes
+// En localhost (o ENABLE_REAL_BALANCE_CLOSE): ajusta Otros gastos al balance real y congela snapshots del mes siguiente
 const closeMonth = async (req, res) => {
-    const userId = req.userId;
-    const parsed = parseYearMonth(req.body ?? {});
-    if (!parsed)
-        return res.status(400).json({ error: "year and month (1-12) are required" });
-    const { year, month } = parsed;
-    // A) income
-    const income = await prisma_1.prisma.income.findUnique({
-        where: { userId_year_month: { userId, year, month } },
-        select: { amountUsd: true },
-    });
-    // B) expenses plan override o actual
-    const plan = await prisma_1.prisma.expensePlan.findUnique({
-        where: { userId_year_month: { userId, year, month } },
-        select: { amountUsd: true },
-    });
-    const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0));
-    const end = new Date(Date.UTC(year, month, 1, 0, 0, 0));
-    const expenseRows = await prisma_1.prisma.expense.findMany({
-        where: { userId, date: { gte: start, lt: end } },
-        select: { amountUsd: true },
-    });
-    const actualExpenses = expenseRows.reduce((acc, e) => acc + (e.amountUsd ?? 0), 0);
-    const incomeUsd = income?.amountUsd ?? 0;
-    const expensesUsd = plan?.amountUsd ?? actualExpenses;
-    // C) investmentEarningsUsd = REAL RETURNS del PORTFOLIO
-    //    netWorthStartUsd = TOTAL (portfolio + accounts) start of month
-    const { totalNW, portfolioVariation } = await computeNetWorthSeriesUsd(userId, year);
-    const mvRows = await prisma_1.prisma.investmentMovement.findMany({
-        where: {
-            investment: { userId, type: "PORTFOLIO" },
-            date: { gte: start, lt: end },
-        },
-        select: { type: true, amount: true, currencyId: true },
-    });
-    // USD only (como tu UI)
-    const flowsUsd = mvRows.reduce((acc, r) => {
-        if ((r.currencyId ?? "") !== "USD")
+    try {
+        const userId = req.userId;
+        const parsed = parseYearMonth(req.body ?? {});
+        if (!parsed)
+            return res.status(400).json({ error: "year and month (1-12) are required" });
+        const { year, month } = parsed;
+        const income = await prisma_1.prisma.income.findUnique({
+            where: { userId_year_month: { userId, year, month } },
+            select: { amountUsd: true },
+        });
+        const plan = await prisma_1.prisma.expensePlan.findUnique({
+            where: { userId_year_month: { userId, year, month } },
+            select: { amountUsd: true },
+        });
+        const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0));
+        const end = new Date(Date.UTC(year, month, 1, 0, 0, 0));
+        const expenseRows = await prisma_1.prisma.expense.findMany({
+            where: { userId, date: { gte: start, lt: end } },
+            select: { amountUsd: true },
+        });
+        const actualExpenses = expenseRows.reduce((acc, e) => acc + (e.amountUsd ?? 0), 0);
+        const incomeUsd = income?.amountUsd ?? 0;
+        const baseExpensesUsd = actualExpenses > 0 ? actualExpenses : (plan?.amountUsd ?? 0);
+        const { totalNW, portfolioVariation } = await computeNetWorthSeriesUsd(userId, year);
+        const netWorthStartUsd = totalNW[month - 1] ?? 0;
+        let netWorthEndUsd = null;
+        if (month < 12) {
+            netWorthEndUsd = totalNW[month] ?? 0;
+        }
+        else {
+            const nextYear = await computeNetWorthSeriesUsd(userId, year + 1);
+            netWorthEndUsd = nextYear.totalNW[0] ?? 0;
+        }
+        const mvRows = await prisma_1.prisma.investmentMovement.findMany({
+            where: {
+                investment: { userId, type: "PORTFOLIO" },
+                date: { gte: start, lt: end },
+            },
+            select: { type: true, amount: true, currencyId: true },
+        });
+        const flowsUsd = mvRows.reduce((acc, r) => {
+            if ((r.currencyId ?? "") !== "USD")
+                return acc;
+            const amt = Number(r.amount ?? 0);
+            if (r.type === "deposit")
+                return acc + amt;
+            if (r.type === "withdrawal")
+                return acc - amt;
             return acc;
-        const amt = Number(r.amount ?? 0);
-        if (r.type === "deposit")
-            return acc + amt;
-        if (r.type === "withdrawal")
-            return acc - amt;
-        return acc;
-    }, 0);
-    const variation = portfolioVariation[month - 1] ?? 0;
-    const investmentEarningsUsd = variation - flowsUsd;
-    const balanceUsd = incomeUsd - expensesUsd + investmentEarningsUsd;
-    // ✅ TOTAL net worth start (portfolio + accounts)
-    const netWorthStartUsd = totalNW[month - 1] ?? 0;
-    const row = await prisma_1.prisma.monthClose.upsert({
-        where: { userId_year_month: { userId, year, month } },
-        update: {
-            incomeUsd,
-            expensesUsd,
-            investmentEarningsUsd,
-            balanceUsd,
-            netWorthStartUsd,
-            closedAt: new Date(),
-        },
-        create: {
-            userId,
-            year,
-            month,
-            incomeUsd,
-            expensesUsd,
-            investmentEarningsUsd,
-            balanceUsd,
-            netWorthStartUsd,
-        },
-    });
-    res.status(201).json(row);
+        }, 0);
+        const variation = portfolioVariation[month - 1] ?? 0;
+        const investmentEarningsUsd = variation - flowsUsd;
+        let expensesUsd;
+        let balanceUsd;
+        if (isRealBalanceCloseEnabled(req) && netWorthEndUsd != null) {
+            const realBalanceUsd = netWorthEndUsd - netWorthStartUsd;
+            let otherExpensesProposed = incomeUsd + investmentEarningsUsd - realBalanceUsd - baseExpensesUsd;
+            if (!Number.isFinite(otherExpensesProposed))
+                otherExpensesProposed = 0;
+            await prisma_1.prisma.monthlyBudget.upsert({
+                where: { userId_year_month: { userId, year, month } },
+                update: { otherExpensesUsd: otherExpensesProposed },
+                create: { userId, year, month, otherExpensesUsd: otherExpensesProposed },
+            });
+            expensesUsd = baseExpensesUsd + otherExpensesProposed;
+            balanceUsd = realBalanceUsd;
+            const nextYear = month === 12 ? year + 1 : year;
+            const nextMonth = month === 12 ? 1 : month + 1;
+            const investmentIds = await prisma_1.prisma.investment.findMany({
+                where: { userId },
+                select: { id: true },
+            });
+            if (investmentIds.length > 0) {
+                await prisma_1.prisma.investmentSnapshot.updateMany({
+                    where: {
+                        investmentId: { in: investmentIds.map((i) => i.id) },
+                        year: nextYear,
+                        month: nextMonth,
+                    },
+                    data: { isClosed: true },
+                });
+            }
+        }
+        else {
+            expensesUsd = plan?.amountUsd ?? actualExpenses;
+            balanceUsd = incomeUsd - expensesUsd + investmentEarningsUsd;
+        }
+        const row = await prisma_1.prisma.monthClose.upsert({
+            where: { userId_year_month: { userId, year, month } },
+            update: {
+                incomeUsd,
+                expensesUsd,
+                investmentEarningsUsd,
+                balanceUsd,
+                netWorthStartUsd,
+                ...(netWorthEndUsd != null && { netWorthEndUsd }),
+                closedAt: new Date(),
+            },
+            create: {
+                userId,
+                year,
+                month,
+                incomeUsd,
+                expensesUsd,
+                investmentEarningsUsd,
+                balanceUsd,
+                netWorthStartUsd,
+                ...(netWorthEndUsd != null && { netWorthEndUsd }),
+            },
+        });
+        res.status(201).json(row);
+    }
+    catch (err) {
+        console.error("closeMonth error:", err);
+        const message = err?.message ?? String(err);
+        res.status(500).json({ error: `Error al cerrar el mes: ${message}` });
+    }
 };
 exports.closeMonth = closeMonth;
 const reopenMonth = async (req, res) => {

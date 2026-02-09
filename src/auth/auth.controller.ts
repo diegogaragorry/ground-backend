@@ -378,7 +378,7 @@ export const me = async (req: AuthRequest, res: Response) => {
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, email: true, role: true, createdAt: true, forceOnboardingNextLogin: true },
+    select: { id: true, email: true, role: true, createdAt: true, forceOnboardingNextLogin: true, onboardingStep: true },
   });
 
   if (!user) return res.status(404).json({ error: "User not found" });
@@ -386,16 +386,26 @@ export const me = async (req: AuthRequest, res: Response) => {
   return res.json(user);
 };
 
+const ONBOARDING_STEPS = ["welcome", "admin", "expenses", "investments", "budget", "dashboard", "done"] as const;
+
 /**
- * PATCH /auth/me — clear forceOnboardingNextLogin (used after showing onboarding)
+ * PATCH /auth/me — update forceOnboardingNextLogin and/or onboardingStep
  */
 export const patchMe = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
-  const body = req.body as { forceOnboardingNextLogin?: boolean } | undefined;
+  const body = req.body as { forceOnboardingNextLogin?: boolean; onboardingStep?: string } | undefined;
+  const data: { forceOnboardingNextLogin?: boolean; onboardingStep?: string } = {};
   if (body?.forceOnboardingNextLogin === false) {
+    data.forceOnboardingNextLogin = false;
+  }
+  if (body?.onboardingStep != null && typeof body.onboardingStep === "string") {
+    const step = body.onboardingStep.trim();
+    if (ONBOARDING_STEPS.includes(step as any)) data.onboardingStep = step;
+  }
+  if (Object.keys(data).length > 0) {
     await prisma.user.update({
       where: { id: userId },
-      data: { forceOnboardingNextLogin: false },
+      data,
     });
   }
   return res.status(204).end();

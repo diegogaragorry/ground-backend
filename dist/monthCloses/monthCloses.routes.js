@@ -5,6 +5,8 @@ const requireAuth_1 = require("../middlewares/requireAuth");
 const monthCloses_controller_1 = require("./monthCloses.controller");
 const router = (0, express_1.Router)();
 router.get("/", requireAuth_1.requireAuth, monthCloses_controller_1.listMonthCloses);
+router.post("/preview", requireAuth_1.requireAuth, monthCloses_controller_1.previewMonthClose);
+router.get("/preview", requireAuth_1.requireAuth, monthCloses_controller_1.previewMonthClose);
 router.post("/close", requireAuth_1.requireAuth, monthCloses_controller_1.closeMonth);
 router.post("/reopen", requireAuth_1.requireAuth, monthCloses_controller_1.reopenMonth);
 exports.default = router;

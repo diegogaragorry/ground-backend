@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.changeMyPassword = exports.deleteUser = exports.updateUser = exports.createUser = exports.listUsers = void 0;
+exports.changeMyPassword = exports.deleteUser = exports.updateUser = exports.createUser = exports.getRecentActivity = exports.listUsers = void 0;
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const prisma_1 = require("../lib/prisma");
 function cleanEmail(s) {
@@ -26,6 +26,42 @@ const listUsers = async (req, res) => {
     res.json({ rows });
 };
 exports.listUsers = listUsers;
+const RECENT_USERS_LIMIT = 25;
+const RECENT_CODES_LIMIT = 40;
+// GET /admin/recent-activity (SUPER_ADMIN) — últimos usuarios creados y últimos códigos de verificación (para ver en producción)
+const getRecentActivity = async (req, res) => {
+    const [recentUsers, recentCodes] = await Promise.all([
+        prisma_1.prisma.user.findMany({
+            orderBy: { createdAt: "desc" },
+            take: RECENT_USERS_LIMIT,
+            select: { id: true, email: true, role: true, createdAt: true },
+        }),
+        prisma_1.prisma.emailVerificationCode.findMany({
+            orderBy: { createdAt: "desc" },
+            take: RECENT_CODES_LIMIT,
+            select: {
+                id: true,
+                email: true,
+                purpose: true,
+                createdAt: true,
+                expiresAt: true,
+                usedAt: true,
+                attempts: true,
+            },
+        }),
+    ]);
+    const now = new Date();
+    const codesWithStatus = recentCodes.map((c) => ({
+        ...c,
+        status: c.usedAt ? "used" : c.expiresAt <= now ? "expired" : "pending",
+    }));
+    res.json({
+        recentUsers,
+        recentVerificationCodes: codesWithStatus,
+        note: "Verification codes are sent in background; send errors are only logged server-side.",
+    });
+};
+exports.getRecentActivity = getRecentActivity;
 // POST /admin/users (SUPER_ADMIN)
 const createUser = async (req, res) => {
     const email = cleanEmail(req.body?.email);

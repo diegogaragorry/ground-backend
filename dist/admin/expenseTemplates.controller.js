@@ -1,6 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.deleteExpenseTemplate = exports.updateExpenseTemplate = exports.createExpenseTemplate = exports.listExpenseTemplates = void 0;
+exports.serverYear = serverYear;
+exports.openMonthsForYear = openMonthsForYear;
+exports.ensurePlannedForTemplate = ensurePlannedForTemplate;
 const prisma_1 = require("../lib/prisma");
 function parseAmountUsd(v) {
     if (v == null || v === "")
@@ -125,6 +128,32 @@ const createExpenseTemplate = async (req, res) => {
     catch (e) {
         const msg = String(e?.message ?? "");
         if (msg.toLowerCase().includes("unique")) {
+            // Template ya existe (bootstrap): actualizar monto si vino en el request y sincronizar drafts
+            const existing = await prisma_1.prisma.expenseTemplate.findFirst({
+                where: { userId, categoryId, description },
+                include: { category: true },
+            });
+            if (existing) {
+                const templatePayload = {
+                    id: existing.id,
+                    expenseType: existing.expenseType,
+                    categoryId: existing.categoryId,
+                    description: existing.description,
+                    defaultAmountUsd: defaultAmountUsd ?? existing.defaultAmountUsd ?? null,
+                };
+                if (defaultAmountUsd !== undefined && defaultAmountUsd !== null) {
+                    await prisma_1.prisma.expenseTemplate.update({
+                        where: { id: existing.id },
+                        data: { defaultAmountUsd },
+                    });
+                }
+                await syncPlannedAfterTemplateUpdate(userId, year, templatePayload);
+                const updated = await prisma_1.prisma.expenseTemplate.findUnique({
+                    where: { id: existing.id },
+                    include: { category: true },
+                });
+                return res.status(200).json(updated ?? existing);
+            }
             return res.status(409).json({ error: "Template already exists (unique constraint)" });
         }
         return res.status(500).json({ error: "Error creating template" });

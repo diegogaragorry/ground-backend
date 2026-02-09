@@ -7,6 +7,8 @@ const users_controller_1 = require("./users.controller");
 const router = (0, express_1.Router)();
 // normal user: cambia su password
 router.post("/me/password", requireAuth_1.requireAuth, users_controller_1.changeMyPassword);
+// super admin: actividad reciente (usuarios + códigos)
+router.get("/recent-activity", requireAuth_1.requireAuth, requireSuperAdmin_1.requireSuperAdmin, users_controller_1.getRecentActivity);
 // super admin: CRUD usuarios
 router.get("/users", requireAuth_1.requireAuth, requireSuperAdmin_1.requireSuperAdmin, users_controller_1.listUsers);
 router.post("/users", requireAuth_1.requireAuth, requireSuperAdmin_1.requireSuperAdmin, users_controller_1.createUser);

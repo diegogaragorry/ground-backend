@@ -111,7 +111,10 @@ export const listExpensesByMonth = async (req: AuthRequest, res: Response) => {
   const expenses = await prisma.expense.findMany({
     where: { userId, date: { gte: start, lt: end } },
     orderBy: { date: "desc" },
-    include: { category: true, currency: true },
+    include: {
+      category: { select: { id: true, name: true, nameKey: true, expenseType: true } },
+      currency: true,
+    },
   });
 
   res.json(expenses);
@@ -137,15 +140,21 @@ export const expensesSummary = async (req: AuthRequest, res: Response) => {
   const categoryIds = [...new Set(grouped.map((g) => g.categoryId))];
   const categories = await prisma.category.findMany({
     where: { id: { in: categoryIds }, userId },
+    select: { id: true, name: true, nameKey: true, expenseType: true },
   });
-  const categoryMap = new Map(categories.map((c) => [c.id, c.name]));
+  const categoryMap = new Map(categories.map((c) => [c.id, c]));
 
-  const result = grouped.map((g) => ({
-    categoryId: g.categoryId,
-    categoryName: categoryMap.get(g.categoryId) ?? "(unknown)",
-    currencyId: "USD",
-    total: g._sum.amountUsd ?? 0,
-  }));
+  const result = grouped.map((g) => {
+    const cat = categoryMap.get(g.categoryId);
+    return {
+      categoryId: g.categoryId,
+      categoryName: cat?.name ?? "(unknown)",
+      nameKey: cat?.nameKey ?? null,
+      expenseType: cat?.expenseType ?? null,
+      currencyId: "USD",
+      total: g._sum.amountUsd ?? 0,
+    };
+  });
 
   res.json({
     year: ym.year,
