@@ -268,14 +268,15 @@ model MonthClose {
 ========================================================= */
 
 model ExpenseTemplate {
-  id               String      @id @default(uuid())
-  userId           String
-  expenseType      ExpenseType
-  categoryId       String
-  description      String
-  defaultAmountUsd Float?
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  id                  String   @id @default(uuid())
+  userId              String
+  expenseType         ExpenseType
+  categoryId          String
+  description         String
+  defaultAmountUsd    Float?
+  defaultCurrencyId   String?  @default("USD")  // moneda en que el usuario ingresa el monto (UYU | USD)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
   // Optional i18n key for default template descriptions (frontend uses t('templateDescriptions.'+descriptionKey))
   descriptionKey String?

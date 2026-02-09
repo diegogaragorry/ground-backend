@@ -2,6 +2,7 @@
 import { Response } from "express";
 import { prisma } from "../lib/prisma";
 import type { AuthRequest } from "../middlewares/requireAuth";
+import { toUsd } from "../utils/fx";
 
 function parseAmountUsd(v: any) {
   if (v == null || v === "") return null;
@@ -92,13 +93,47 @@ export const listExpenseTemplates = async (req: AuthRequest, res: Response) => {
   res.json({ rows });
 };
 
+function parseTemplateAmount(
+  body: any
+): { defaultAmountUsd: number | null; defaultCurrencyId: string } {
+  const currencyId = String(body?.defaultCurrencyId ?? "USD").toUpperCase();
+  const sentUsd = parseAmountUsd(body?.defaultAmountUsd);
+  if (sentUsd !== undefined && sentUsd !== null) {
+    return { defaultAmountUsd: sentUsd, defaultCurrencyId: currencyId || "USD" };
+  }
+  const amount = body?.defaultAmount != null ? Number(body.defaultAmount) : null;
+  if (amount == null || !Number.isFinite(amount)) {
+    return { defaultAmountUsd: null, defaultCurrencyId: currencyId || "USD" };
+  }
+  if (currencyId === "USD") {
+    return { defaultAmountUsd: amount, defaultCurrencyId: "USD" };
+  }
+  if (currencyId === "UYU") {
+    const rate = Number(body?.usdUyuRate);
+    if (!Number.isFinite(rate) || rate <= 0) {
+      throw new Error("usdUyuRate is required and must be > 0 when defaultCurrencyId is UYU");
+    }
+    const { amountUsd } = toUsd({ amount, currencyId: "UYU", usdUyuRate: rate });
+    return { defaultAmountUsd: amountUsd, defaultCurrencyId: "UYU" };
+  }
+  return { defaultAmountUsd: null, defaultCurrencyId: currencyId || "USD" };
+}
+
 // POST /admin/expenseTemplates
 // Opción A: expenseType lo define Category.expenseType
 export const createExpenseTemplate = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
   const categoryId = String(req.body?.categoryId ?? "");
   const description = String(req.body?.description ?? "").trim();
-  const defaultAmountUsd = parseAmountUsd(req.body?.defaultAmountUsd);
+  let defaultAmountUsd: number | null;
+  let defaultCurrencyId: string;
+  try {
+    const parsed = parseTemplateAmount(req.body);
+    defaultAmountUsd = parsed.defaultAmountUsd;
+    defaultCurrencyId = parsed.defaultCurrencyId;
+  } catch (e: any) {
+    return res.status(400).json({ error: e?.message ?? "Invalid amount/currency" });
+  }
 
   if (!categoryId) return res.status(400).json({ error: "categoryId is required" });
   if (!description) return res.status(400).json({ error: "description is required" });
@@ -120,6 +155,7 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
         categoryId,
         description,
         defaultAmountUsd,
+        defaultCurrencyId: defaultCurrencyId || "USD",
       },
       include: { category: true },
     });
@@ -150,10 +186,13 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
           description: existing.description,
           defaultAmountUsd: defaultAmountUsd ?? existing.defaultAmountUsd ?? null,
         };
-        if (defaultAmountUsd !== undefined && defaultAmountUsd !== null) {
+        if (defaultAmountUsd !== undefined && defaultAmountUsd !== null || defaultCurrencyId) {
           await prisma.expenseTemplate.update({
             where: { id: existing.id },
-            data: { defaultAmountUsd },
+            data: {
+              ...(defaultAmountUsd !== undefined && defaultAmountUsd !== null ? { defaultAmountUsd } : {}),
+              ...(defaultCurrencyId ? { defaultCurrencyId } : {}),
+            },
           });
         }
         await syncPlannedAfterTemplateUpdate(userId, year, templatePayload);
@@ -165,7 +204,7 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
       }
       return res.status(409).json({ error: "Template already exists (unique constraint)" });
     }
-    return res.status(500).json({ error: "Error creating template" });
+    return res.status(500).json({ error: e?.message ?? "Error creating template" });
   }
 };
 
@@ -178,7 +217,7 @@ export const updateExpenseTemplate = async (req: AuthRequest, res: Response) => 
 
   const existing = await prisma.expenseTemplate.findFirst({
     where: { id, userId },
-    select: { id: true, categoryId: true, expenseType: true },
+    select: { id: true, categoryId: true, expenseType: true, defaultCurrencyId: true },
   });
   if (!existing) return res.status(404).json({ error: "Template not found" });
 
@@ -206,9 +245,26 @@ export const updateExpenseTemplate = async (req: AuthRequest, res: Response) => 
     patch.description = d;
   }
 
-  // defaultAmountUsd (nullable)
-  if (req.body?.defaultAmountUsd !== undefined) {
-    patch.defaultAmountUsd = parseAmountUsd(req.body.defaultAmountUsd);
+  // defaultAmountUsd / defaultCurrencyId: por monto en USD o por (monto, moneda, tipo de cambio)
+  if (
+    req.body?.defaultAmountUsd !== undefined ||
+    req.body?.defaultAmount !== undefined ||
+    (req.body?.defaultCurrencyId !== undefined && req.body?.defaultAmount !== undefined)
+  ) {
+    try {
+      const parsed = parseTemplateAmount({
+        defaultAmountUsd: req.body?.defaultAmountUsd,
+        defaultAmount: req.body?.defaultAmount,
+        defaultCurrencyId: req.body?.defaultCurrencyId ?? (existing as any).defaultCurrencyId ?? "USD",
+        usdUyuRate: req.body?.usdUyuRate,
+      });
+      patch.defaultAmountUsd = parsed.defaultAmountUsd;
+      patch.defaultCurrencyId = parsed.defaultCurrencyId;
+    } catch (e: any) {
+      return res.status(400).json({ error: e?.message ?? "Invalid amount/currency" });
+    }
+  } else if (req.body?.defaultCurrencyId !== undefined) {
+    patch.defaultCurrencyId = String(req.body.defaultCurrencyId || "USD").toUpperCase();
   }
 
   // showInExpenses: si true, la plantilla se muestra en Gastos (genera borradores)

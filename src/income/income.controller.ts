@@ -5,12 +5,17 @@ import type { AuthRequest } from "../middlewares/requireAuth";
 function parseYearMonth(body: any) {
   const year = Number(body.year);
   const month = Number(body.month);
-  const amountUsd = Number(body.amountUsd);
+  const amountUsd = body.amountUsd !== undefined ? Number(body.amountUsd) : undefined;
+  const nominalUsd = body.nominalUsd !== undefined ? Number(body.nominalUsd) : undefined;
+  const taxesUsd = body.taxesUsd !== undefined ? Number(body.taxesUsd) : undefined;
 
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) return null;
-  if (!Number.isFinite(amountUsd) || amountUsd < 0) return null;
+  if (nominalUsd !== undefined && (!Number.isFinite(nominalUsd) || nominalUsd < 0)) return null;
+  if (taxesUsd !== undefined && (!Number.isFinite(taxesUsd) || taxesUsd < 0)) return null;
+  if (amountUsd !== undefined && (!Number.isFinite(amountUsd) || amountUsd < 0)) return null;
+  if (amountUsd === undefined && nominalUsd === undefined) return null;
 
-  return { year, month, amountUsd };
+  return { year, month, amountUsd, nominalUsd, taxesUsd };
 }
 
 /** Total income = nominal + extraordinary - taxes */
@@ -21,13 +26,22 @@ function computeTotal(nominal: number, extraordinary: number, taxes: number) {
 export const upsertIncome = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
   const parsed = parseYearMonth(req.body ?? {});
-  if (!parsed) return res.status(400).json({ error: "year, month (1-12) and amountUsd >= 0 are required" });
+  if (!parsed) return res.status(400).json({ error: "year, month (1-12) and amountUsd or nominalUsd >= 0 are required" });
 
-  const { year, month, amountUsd } = parsed;
-  // When only amountUsd is sent (e.g. onboarding), store as nominal for the new Ingresos tab
-  const nominalUsd = amountUsd;
+  const { year, month, amountUsd: bodyAmount, nominalUsd: bodyNominal, taxesUsd: bodyTaxes } = parsed;
   const extraordinaryUsd = 0;
-  const taxesUsd = 0;
+  let nominalUsd: number;
+  let taxesUsd: number;
+  let amountUsd: number;
+  if (bodyNominal !== undefined) {
+    nominalUsd = bodyNominal;
+    taxesUsd = bodyTaxes ?? 0;
+    amountUsd = computeTotal(nominalUsd, extraordinaryUsd, taxesUsd);
+  } else {
+    nominalUsd = bodyAmount!;
+    taxesUsd = 0;
+    amountUsd = bodyAmount!;
+  }
 
   const row = await prisma.income.upsert({
     where: { userId_year_month: { userId, year, month } },
