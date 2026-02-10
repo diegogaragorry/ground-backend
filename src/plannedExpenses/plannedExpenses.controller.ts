@@ -211,7 +211,7 @@ export const confirmPlannedExpense = async (req: AuthRequest, res: Response) => 
 
   const pe = await prisma.plannedExpense.findFirst({
     where: { id, userId },
-    include: { category: true, expense: true },
+    include: { category: true, expense: true, template: { select: { defaultCurrencyId: true } } },
   });
   if (!pe) return res.status(404).json({ error: "PlannedExpense not found" });
 
@@ -233,6 +233,21 @@ export const confirmPlannedExpense = async (req: AuthRequest, res: Response) => 
     return res.status(400).json({ error: "amountUsd must be > 0 to confirm" });
   }
 
+  const isUyu = pe.template?.defaultCurrencyId === "UYU";
+  let currencyId: "USD" | "UYU" = "USD";
+  let amount = amountUsd;
+  let usdUyuRate: number | null = null;
+
+  if (isUyu) {
+    const rate = Number((req.body as any)?.usdUyuRate);
+    if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
+      return res.status(400).json({ error: "usdUyuRate is required and must be > 0 when the template is in UYU" });
+    }
+    currencyId = "UYU";
+    amount = Math.round(amountUsd * rate);
+    usdUyuRate = rate;
+  }
+
   const date = new Date(Date.UTC(pe.year, pe.month, 0, 12, 0, 0));
 
   const expenseId = await prisma.$transaction(async (tx) => {
@@ -252,11 +267,11 @@ export const confirmPlannedExpense = async (req: AuthRequest, res: Response) => 
       data: {
         userId,
         categoryId: pe.categoryId,
-        currencyId: "USD",
+        currencyId,
         description: pe.description,
-        amount: amountUsd,
+        amount,
         amountUsd,
-        usdUyuRate: null,
+        usdUyuRate,
         date,
         expenseType: pe.expenseType,
         plannedExpenseId: pe.id,

@@ -378,7 +378,7 @@ export const me = async (req: AuthRequest, res: Response) => {
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, email: true, role: true, createdAt: true, forceOnboardingNextLogin: true, onboardingStep: true },
+    select: { id: true, email: true, role: true, createdAt: true, forceOnboardingNextLogin: true, onboardingStep: true, mobileWarningDismissed: true },
   });
 
   if (!user) return res.status(404).json({ error: "User not found" });
@@ -389,18 +389,21 @@ export const me = async (req: AuthRequest, res: Response) => {
 const ONBOARDING_STEPS = ["welcome", "admin", "expenses", "investments", "budget", "dashboard", "done"] as const;
 
 /**
- * PATCH /auth/me — update forceOnboardingNextLogin and/or onboardingStep
+ * PATCH /auth/me — update forceOnboardingNextLogin, onboardingStep, mobileWarningDismissed
  */
 export const patchMe = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
-  const body = req.body as { forceOnboardingNextLogin?: boolean; onboardingStep?: string } | undefined;
-  const data: { forceOnboardingNextLogin?: boolean; onboardingStep?: string } = {};
+  const body = req.body as { forceOnboardingNextLogin?: boolean; onboardingStep?: string; mobileWarningDismissed?: boolean } | undefined;
+  const data: { forceOnboardingNextLogin?: boolean; onboardingStep?: string; mobileWarningDismissed?: boolean } = {};
   if (body?.forceOnboardingNextLogin === false) {
     data.forceOnboardingNextLogin = false;
   }
   if (body?.onboardingStep != null && typeof body.onboardingStep === "string") {
     const step = body.onboardingStep.trim();
     if (ONBOARDING_STEPS.includes(step as any)) data.onboardingStep = step;
+  }
+  if (body?.mobileWarningDismissed === true) {
+    data.mobileWarningDismissed = true;
   }
   if (Object.keys(data).length > 0) {
     await prisma.user.update({

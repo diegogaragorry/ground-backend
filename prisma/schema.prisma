@@ -28,6 +28,7 @@ model User {
   createdAt                 DateTime @default(now())
   forceOnboardingNextLogin  Boolean  @default(false)
   onboardingStep            String   @default("welcome")
+  mobileWarningDismissed    Boolean  @default(false)
 
   expenses     Expense[]
   categories   Category[]
