@@ -115,7 +115,10 @@ export const listPlannedExpenses = async (req: AuthRequest, res: Response) => {
   const rows = await prisma.plannedExpense.findMany({
     where: { userId, year: ym.year, month: ym.month },
     orderBy: [{ expenseType: "asc" }, { categoryId: "asc" }, { description: "asc" }],
-    include: { category: true },
+    include: {
+      category: true,
+      template: { select: { defaultCurrencyId: true } },
+    },
   });
 
   // Ocultar borradores de plantillas con showInExpenses = false
