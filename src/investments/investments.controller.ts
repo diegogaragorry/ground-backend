@@ -1,6 +1,7 @@
 import { Response } from "express";
 import type { AuthRequest } from "../middlewares/requireAuth";
 import { prisma } from "../lib/prisma";
+import { toUsd } from "../utils/fx";
 
 function parseType(v: any) {
   const s = String(v ?? "").trim().toUpperCase();
@@ -13,6 +14,19 @@ function parseMonth(v: any) {
   const n = Number(v);
   if (!Number.isInteger(n) || n < 1 || n > 12) return null;
   return n;
+}
+
+async function getUsdUyuRateForMonth(userId: string, year: number, month: number): Promise<number> {
+  const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0));
+  const end = new Date(Date.UTC(year, month, 1, 0, 0, 0));
+  const last = await prisma.expense.findFirst({
+    where: { userId, date: { gte: start, lt: end }, usdUyuRate: { not: null } },
+    orderBy: { date: "desc" },
+    select: { usdUyuRate: true },
+  });
+  const fallback = Number(process.env.DEFAULT_USD_UYU_RATE ?? 38);
+  const v = Number(last?.usdUyuRate ?? fallback);
+  return Number.isFinite(v) && v > 0 ? v : fallback;
 }
 
 export const listInvestments = async (req: AuthRequest, res: Response) => {
@@ -123,7 +137,36 @@ export const updateInvestmentConfig = async (req: AuthRequest, res: Response) =>
     data.yieldStartMonth = m;
   }
 
+  const currencyChanged = data.currencyId !== undefined && data.currencyId !== existing.currencyId;
+  const newCurrencyId = data.currencyId ?? existing.currencyId;
+
   const updated = await prisma.investment.update({ where: { id }, data });
+
+  if (currencyChanged) {
+    const snaps = await prisma.investmentSnapshot.findMany({
+      where: { investmentId: id },
+    });
+    for (const snap of snaps) {
+      const cap = snap.capital;
+      if (cap == null || Number.isNaN(cap) || cap < 0) continue;
+      const year = snap.year;
+      const month = snap.month;
+      let capitalUsd: number;
+      if (newCurrencyId === "USD") {
+        capitalUsd = cap;
+      } else {
+        const rate = await getUsdUyuRateForMonth(userId, year, month);
+        capitalUsd = toUsd({ amount: cap, currencyId: newCurrencyId, usdUyuRate: rate }).amountUsd;
+      }
+      await prisma.investmentSnapshot.update({
+        where: {
+          investmentId_year_month: { investmentId: id, year, month },
+        },
+        data: { capitalUsd },
+      });
+    }
+  }
+
   res.json(updated);
 };
 
