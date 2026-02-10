@@ -26,6 +26,7 @@ import monthClosesRoutes from "./monthCloses/monthCloses.routes";
 import adminRouter from "./admin/admin.routes";
 
 import plannedExpensesRoutes from "./plannedExpenses/plannedExpenses.routes";
+import fxRoutes from "./fx/fx.routes";
 
 
 
@@ -117,6 +118,7 @@ app.use("/investment-movements", investmentMovementsRoutes);
 app.use("/monthCloses", monthClosesRoutes);
 app.use("/admin", adminRouter);
 app.use("/plannedExpenses", plannedExpensesRoutes);
+app.use("/fx", fxRoutes);
 
 app.get("/health", (_, res) => {
   res.json({ status: "ok" });
