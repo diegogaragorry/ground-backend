@@ -6,7 +6,10 @@
 import path from "path";
 import dotenv from "dotenv";
 
-dotenv.config({ path: path.resolve(__dirname, "..", ".env") });
+// When DATABASE_URL is already set (e.g. by create-user-prod.sh), don't load .env so the URL isn't overwritten
+if (!process.env.DATABASE_URL) {
+  dotenv.config({ path: path.resolve(__dirname, "..", ".env") });
+}
 
 import bcrypt from "bcrypt";
 import { prisma } from "../src/lib/prisma";
