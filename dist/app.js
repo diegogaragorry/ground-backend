@@ -23,6 +23,7 @@ const networth_routes_1 = __importDefault(require("./networth/networth.routes"))
 const monthCloses_routes_1 = __importDefault(require("./monthCloses/monthCloses.routes"));
 const admin_routes_1 = __importDefault(require("./admin/admin.routes"));
 const plannedExpenses_routes_1 = __importDefault(require("./plannedExpenses/plannedExpenses.routes"));
+const fx_routes_1 = __importDefault(require("./fx/fx.routes"));
 const app = (0, express_1.default)();
 // ✅ CORS: orígenes permitidos (Vercel, ground.finance y subdominios, localhost).
 const allowedOrigins = [
@@ -104,6 +105,7 @@ app.use("/investment-movements", investmentMovements_routes_1.default);
 app.use("/monthCloses", monthCloses_routes_1.default);
 app.use("/admin", admin_routes_1.default);
 app.use("/plannedExpenses", plannedExpenses_routes_1.default);
+app.use("/fx", fx_routes_1.default);
 app.get("/health", (_, res) => {
     res.json({ status: "ok" });
 });

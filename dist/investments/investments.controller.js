@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.deleteInvestment = exports.updateInvestmentConfig = exports.createInvestment = exports.listInvestments = void 0;
 const prisma_1 = require("../lib/prisma");
+const fx_1 = require("../utils/fx");
 function parseType(v) {
     const s = String(v ?? "").trim().toUpperCase();
     if (s === "PORTFOLIO")
@@ -15,6 +16,18 @@ function parseMonth(v) {
     if (!Number.isInteger(n) || n < 1 || n > 12)
         return null;
     return n;
+}
+async function getUsdUyuRateForMonth(userId, year, month) {
+    const start = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0));
+    const end = new Date(Date.UTC(year, month, 1, 0, 0, 0));
+    const last = await prisma_1.prisma.expense.findFirst({
+        where: { userId, date: { gte: start, lt: end }, usdUyuRate: { not: null } },
+        orderBy: { date: "desc" },
+        select: { usdUyuRate: true },
+    });
+    const fallback = Number(process.env.DEFAULT_USD_UYU_RATE ?? 38);
+    const v = Number(last?.usdUyuRate ?? fallback);
+    return Number.isFinite(v) && v > 0 ? v : fallback;
 }
 const listInvestments = async (req, res) => {
     const userId = req.userId;
@@ -113,7 +126,35 @@ const updateInvestmentConfig = async (req, res) => {
             return res.status(400).json({ error: "yieldStartMonth must be 1..12" });
         data.yieldStartMonth = m;
     }
+    const currencyChanged = data.currencyId !== undefined && data.currencyId !== existing.currencyId;
+    const newCurrencyId = data.currencyId ?? existing.currencyId;
     const updated = await prisma_1.prisma.investment.update({ where: { id }, data });
+    if (currencyChanged) {
+        const snaps = await prisma_1.prisma.investmentSnapshot.findMany({
+            where: { investmentId: id },
+        });
+        for (const snap of snaps) {
+            const cap = snap.capital;
+            if (cap == null || Number.isNaN(cap) || cap < 0)
+                continue;
+            const year = snap.year;
+            const month = snap.month;
+            let capitalUsd;
+            if (newCurrencyId === "USD") {
+                capitalUsd = cap;
+            }
+            else {
+                const rate = await getUsdUyuRateForMonth(userId, year, month);
+                capitalUsd = (0, fx_1.toUsd)({ amount: cap, currencyId: newCurrencyId, usdUyuRate: rate }).amountUsd;
+            }
+            await prisma_1.prisma.investmentSnapshot.update({
+                where: {
+                    investmentId_year_month: { investmentId: id, year, month },
+                },
+                data: { capitalUsd },
+            });
+        }
+    }
     res.json(updated);
 };
 exports.updateInvestmentConfig = updateInvestmentConfig;

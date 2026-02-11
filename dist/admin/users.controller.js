@@ -28,9 +28,10 @@ const listUsers = async (req, res) => {
 exports.listUsers = listUsers;
 const RECENT_USERS_LIMIT = 25;
 const RECENT_CODES_LIMIT = 40;
-// GET /admin/recent-activity (SUPER_ADMIN) — últimos usuarios creados y últimos códigos de verificación (para ver en producción)
+const RECENT_LOGINS_LIMIT = 20;
+// GET /admin/recent-activity (SUPER_ADMIN) — últimos usuarios, códigos de verificación y últimos ingresos a la app
 const getRecentActivity = async (req, res) => {
-    const [recentUsers, recentCodes] = await Promise.all([
+    const [recentUsers, recentCodes, recentLogins] = await Promise.all([
         prisma_1.prisma.user.findMany({
             orderBy: { createdAt: "desc" },
             take: RECENT_USERS_LIMIT,
@@ -49,15 +50,36 @@ const getRecentActivity = async (req, res) => {
                 attempts: true,
             },
         }),
+        prisma_1.prisma.loginLog.findMany({
+            orderBy: { loggedAt: "desc" },
+            take: RECENT_LOGINS_LIMIT,
+            select: {
+                id: true,
+                userId: true,
+                loggedAt: true,
+                ip: true,
+                userAgent: true,
+                user: { select: { email: true } },
+            },
+        }),
     ]);
     const now = new Date();
     const codesWithStatus = recentCodes.map((c) => ({
         ...c,
         status: c.usedAt ? "used" : c.expiresAt <= now ? "expired" : "pending",
     }));
+    const recentLoginsFlat = recentLogins.map((l) => ({
+        id: l.id,
+        userId: l.userId,
+        email: l.user.email,
+        loggedAt: l.loggedAt,
+        ip: l.ip,
+        userAgent: l.userAgent,
+    }));
     res.json({
         recentUsers,
         recentVerificationCodes: codesWithStatus,
+        recentLogins: recentLoginsFlat,
         note: "Verification codes are sent in background; send errors are only logged server-side.",
     });
 };

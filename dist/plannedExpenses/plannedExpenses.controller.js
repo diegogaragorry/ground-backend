@@ -49,7 +49,7 @@ async function openMonthsForYear(userId, year) {
  */
 async function ensurePlannedForYear(userId, year) {
     const templates = await prisma_1.prisma.expenseTemplate.findMany({
-        where: { userId },
+        where: { userId, showInExpenses: true },
         select: {
             id: true,
             expenseType: true,
@@ -105,7 +105,16 @@ const listPlannedExpenses = async (req, res) => {
         orderBy: [{ expenseType: "asc" }, { categoryId: "asc" }, { description: "asc" }],
         include: { category: true },
     });
-    res.json({ year: ym.year, month: ym.month, rows });
+    // Ocultar borradores de plantillas con showInExpenses = false
+    const templateIds = [...new Set(rows.map((r) => r.templateId).filter(Boolean))];
+    const hiddenTemplateIds = templateIds.length === 0
+        ? new Set()
+        : new Set((await prisma_1.prisma.expenseTemplate.findMany({
+            where: { id: { in: templateIds }, showInExpenses: false },
+            select: { id: true },
+        })).map((t) => t.id));
+    const filtered = rows.filter((r) => !r.templateId || !hiddenTemplateIds.has(r.templateId));
+    res.json({ year: ym.year, month: ym.month, rows: filtered });
 };
 exports.listPlannedExpenses = listPlannedExpenses;
 /**

@@ -7,6 +7,7 @@ const router = (0, express_1.Router)();
 // ✅ cualquier usuario autenticado puede gestionar SUS templates
 router.get("/expenseTemplates", requireAuth_1.requireAuth, expenseTemplates_controller_1.listExpenseTemplates);
 router.post("/expenseTemplates", requireAuth_1.requireAuth, expenseTemplates_controller_1.createExpenseTemplate);
+router.post("/expenseTemplates/set-visibility", requireAuth_1.requireAuth, expenseTemplates_controller_1.setVisibilityToSelected);
 router.put("/expenseTemplates/:id", requireAuth_1.requireAuth, expenseTemplates_controller_1.updateExpenseTemplate);
 router.delete("/expenseTemplates/:id", requireAuth_1.requireAuth, expenseTemplates_controller_1.deleteExpenseTemplate);
 exports.default = router;

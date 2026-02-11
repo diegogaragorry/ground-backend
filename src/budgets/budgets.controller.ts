@@ -152,14 +152,28 @@ export const updateOtherExpenses = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
   const year = Number(req.params.year);
   const month = Number(req.params.month);
-  const value = Number(req.body?.otherExpensesUsd);
+  const body = req.body as
+    | { otherExpensesUsd?: number }
+    | { amount?: number; currencyId?: string; usdUyuRate?: number };
 
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
     return res.status(400).json({ error: "Invalid year or month" });
   }
-  if (!Number.isFinite(value)) {
-    return res.status(400).json({ error: "Invalid otherExpensesUsd" });
+
+  let otherExpensesUsd: number;
+
+  if ("amount" in body && body.currencyId === "UYU" && typeof body.usdUyuRate === "number" && body.usdUyuRate > 0) {
+    const amount = Number(body.amount);
+    if (!Number.isFinite(amount)) {
+      return res.status(400).json({ error: "Invalid amount" });
+    }
+    otherExpensesUsd = amount / body.usdUyuRate;
+  } else if (typeof body.otherExpensesUsd === "number" && Number.isFinite(body.otherExpensesUsd)) {
+    otherExpensesUsd = body.otherExpensesUsd;
+  } else {
+    return res.status(400).json({ error: "Provide otherExpensesUsd or (amount, currencyId: 'UYU', usdUyuRate)" });
   }
+
   // permitimos negativos (ej. ajustes o ingresos extra contabilizados como "otros")
 
   const closed = await prisma.monthClose.findFirst({
@@ -170,8 +184,8 @@ export const updateOtherExpenses = async (req: AuthRequest, res: Response) => {
 
   const row = await prisma.monthlyBudget.upsert({
     where: { userId_year_month: { userId, year, month } },
-    update: { otherExpensesUsd: value },
-    create: { userId, year, month, otherExpensesUsd: value },
+    update: { otherExpensesUsd },
+    create: { userId, year, month, otherExpensesUsd },
     select: { userId: true, year: true, month: true, otherExpensesUsd: true },
   });
 

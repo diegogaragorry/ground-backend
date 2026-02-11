@@ -5,12 +5,20 @@ const prisma_1 = require("../lib/prisma");
 function parseYearMonth(body) {
     const year = Number(body.year);
     const month = Number(body.month);
-    const amountUsd = Number(body.amountUsd);
+    const amountUsd = body.amountUsd !== undefined ? Number(body.amountUsd) : undefined;
+    const nominalUsd = body.nominalUsd !== undefined ? Number(body.nominalUsd) : undefined;
+    const taxesUsd = body.taxesUsd !== undefined ? Number(body.taxesUsd) : undefined;
     if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12)
         return null;
-    if (!Number.isFinite(amountUsd) || amountUsd < 0)
+    if (nominalUsd !== undefined && (!Number.isFinite(nominalUsd) || nominalUsd < 0))
         return null;
-    return { year, month, amountUsd };
+    if (taxesUsd !== undefined && (!Number.isFinite(taxesUsd) || taxesUsd < 0))
+        return null;
+    if (amountUsd !== undefined && (!Number.isFinite(amountUsd) || amountUsd < 0))
+        return null;
+    if (amountUsd === undefined && nominalUsd === undefined)
+        return null;
+    return { year, month, amountUsd, nominalUsd, taxesUsd };
 }
 /** Total income = nominal + extraordinary - taxes */
 function computeTotal(nominal, extraordinary, taxes) {
@@ -20,12 +28,22 @@ const upsertIncome = async (req, res) => {
     const userId = req.userId;
     const parsed = parseYearMonth(req.body ?? {});
     if (!parsed)
-        return res.status(400).json({ error: "year, month (1-12) and amountUsd >= 0 are required" });
-    const { year, month, amountUsd } = parsed;
-    // When only amountUsd is sent (e.g. onboarding), store as nominal for the new Ingresos tab
-    const nominalUsd = amountUsd;
+        return res.status(400).json({ error: "year, month (1-12) and amountUsd or nominalUsd >= 0 are required" });
+    const { year, month, amountUsd: bodyAmount, nominalUsd: bodyNominal, taxesUsd: bodyTaxes } = parsed;
     const extraordinaryUsd = 0;
-    const taxesUsd = 0;
+    let nominalUsd;
+    let taxesUsd;
+    let amountUsd;
+    if (bodyNominal !== undefined) {
+        nominalUsd = bodyNominal;
+        taxesUsd = bodyTaxes ?? 0;
+        amountUsd = computeTotal(nominalUsd, extraordinaryUsd, taxesUsd);
+    }
+    else {
+        nominalUsd = bodyAmount;
+        taxesUsd = 0;
+        amountUsd = bodyAmount;
+    }
     const row = await prisma_1.prisma.income.upsert({
         where: { userId_year_month: { userId, year, month } },
         update: { amountUsd, nominalUsd, extraordinaryUsd, taxesUsd },
@@ -39,13 +57,20 @@ const listIncome = async (req, res) => {
     const year = Number(req.query.year);
     if (!Number.isInteger(year))
         return res.status(400).json({ error: "year is required" });
-    const rows = await prisma_1.prisma.income.findMany({
-        where: { userId, year },
-        orderBy: { month: "asc" },
-        select: { month: true, amountUsd: true, nominalUsd: true, extraordinaryUsd: true, taxesUsd: true },
-    });
+    const [incomeRows, closes] = await Promise.all([
+        prisma_1.prisma.income.findMany({
+            where: { userId, year },
+            orderBy: { month: "asc" },
+            select: { month: true, amountUsd: true, nominalUsd: true, extraordinaryUsd: true, taxesUsd: true },
+        }),
+        prisma_1.prisma.monthClose.findMany({
+            where: { userId, year },
+            select: { month: true },
+        }),
+    ]);
+    const closedMonths = closes.map((c) => c.month);
     // Backward compat: if nominalUsd is null, treat amountUsd as nominal
-    const normalized = rows.map((r) => {
+    const normalized = incomeRows.map((r) => {
         const nominal = r.nominalUsd ?? r.amountUsd ?? 0;
         const extraordinary = r.extraordinaryUsd ?? 0;
         const taxes = r.taxesUsd ?? 0;
@@ -58,10 +83,10 @@ const listIncome = async (req, res) => {
             totalUsd,
         };
     });
-    res.json({ year, rows: normalized });
+    res.json({ year, rows: normalized, closedMonths });
 };
 exports.listIncome = listIncome;
-/** PATCH one month's income components (nominal, extraordinary, taxes). Recomputes total. */
+/** PATCH one month's income components (nominal, extraordinary, taxes). Recomputes total. Rejects if month is closed. */
 const patchIncomeMonth = async (req, res) => {
     const userId = req.userId;
     const body = req.body ?? {};
@@ -69,6 +94,12 @@ const patchIncomeMonth = async (req, res) => {
     const month = Number(body.month);
     if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
         return res.status(400).json({ error: "year and month (1-12) are required" });
+    }
+    const closed = await prisma_1.prisma.monthClose.findUnique({
+        where: { userId_year_month: { userId, year, month } },
+    });
+    if (closed) {
+        return res.status(403).json({ error: "Month is closed; income cannot be edited. Reopen the month in Admin to edit." });
     }
     const nominalUsd = body.nominalUsd !== undefined ? Number(body.nominalUsd) : undefined;
     const extraordinaryUsd = body.extraordinaryUsd !== undefined ? Number(body.extraordinaryUsd) : undefined;

@@ -1,10 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deleteExpenseTemplate = exports.updateExpenseTemplate = exports.createExpenseTemplate = exports.listExpenseTemplates = void 0;
+exports.setVisibilityToSelected = exports.deleteExpenseTemplate = exports.updateExpenseTemplate = exports.createExpenseTemplate = exports.listExpenseTemplates = void 0;
 exports.serverYear = serverYear;
 exports.openMonthsForYear = openMonthsForYear;
 exports.ensurePlannedForTemplate = ensurePlannedForTemplate;
 const prisma_1 = require("../lib/prisma");
+const fx_1 = require("../utils/fx");
 function parseAmountUsd(v) {
     if (v == null || v === "")
         return null;
@@ -85,13 +86,45 @@ const listExpenseTemplates = async (req, res) => {
     res.json({ rows });
 };
 exports.listExpenseTemplates = listExpenseTemplates;
+function parseTemplateAmount(body) {
+    const currencyId = String(body?.defaultCurrencyId ?? "USD").toUpperCase();
+    const sentUsd = parseAmountUsd(body?.defaultAmountUsd);
+    if (sentUsd !== undefined && sentUsd !== null) {
+        return { defaultAmountUsd: sentUsd, defaultCurrencyId: currencyId || "USD" };
+    }
+    const amount = body?.defaultAmount != null ? Number(body.defaultAmount) : null;
+    if (amount == null || !Number.isFinite(amount)) {
+        return { defaultAmountUsd: null, defaultCurrencyId: currencyId || "USD" };
+    }
+    if (currencyId === "USD") {
+        return { defaultAmountUsd: amount, defaultCurrencyId: "USD" };
+    }
+    if (currencyId === "UYU") {
+        const rate = Number(body?.usdUyuRate);
+        if (!Number.isFinite(rate) || rate <= 0) {
+            throw new Error("usdUyuRate is required and must be > 0 when defaultCurrencyId is UYU");
+        }
+        const { amountUsd } = (0, fx_1.toUsd)({ amount, currencyId: "UYU", usdUyuRate: rate });
+        return { defaultAmountUsd: amountUsd, defaultCurrencyId: "UYU" };
+    }
+    return { defaultAmountUsd: null, defaultCurrencyId: currencyId || "USD" };
+}
 // POST /admin/expenseTemplates
 // Opción A: expenseType lo define Category.expenseType
 const createExpenseTemplate = async (req, res) => {
     const userId = req.userId;
     const categoryId = String(req.body?.categoryId ?? "");
     const description = String(req.body?.description ?? "").trim();
-    const defaultAmountUsd = parseAmountUsd(req.body?.defaultAmountUsd);
+    let defaultAmountUsd;
+    let defaultCurrencyId;
+    try {
+        const parsed = parseTemplateAmount(req.body);
+        defaultAmountUsd = parsed.defaultAmountUsd;
+        defaultCurrencyId = parsed.defaultCurrencyId;
+    }
+    catch (e) {
+        return res.status(400).json({ error: e?.message ?? "Invalid amount/currency" });
+    }
     if (!categoryId)
         return res.status(400).json({ error: "categoryId is required" });
     if (!description)
@@ -112,6 +145,7 @@ const createExpenseTemplate = async (req, res) => {
                 categoryId,
                 description,
                 defaultAmountUsd,
+                defaultCurrencyId: defaultCurrencyId || "USD",
             },
             include: { category: true },
         });
@@ -141,10 +175,13 @@ const createExpenseTemplate = async (req, res) => {
                     description: existing.description,
                     defaultAmountUsd: defaultAmountUsd ?? existing.defaultAmountUsd ?? null,
                 };
-                if (defaultAmountUsd !== undefined && defaultAmountUsd !== null) {
+                if (defaultAmountUsd !== undefined && defaultAmountUsd !== null || defaultCurrencyId) {
                     await prisma_1.prisma.expenseTemplate.update({
                         where: { id: existing.id },
-                        data: { defaultAmountUsd },
+                        data: {
+                            ...(defaultAmountUsd !== undefined && defaultAmountUsd !== null ? { defaultAmountUsd } : {}),
+                            ...(defaultCurrencyId ? { defaultCurrencyId } : {}),
+                        },
                     });
                 }
                 await syncPlannedAfterTemplateUpdate(userId, year, templatePayload);
@@ -156,7 +193,7 @@ const createExpenseTemplate = async (req, res) => {
             }
             return res.status(409).json({ error: "Template already exists (unique constraint)" });
         }
-        return res.status(500).json({ error: "Error creating template" });
+        return res.status(500).json({ error: e?.message ?? "Error creating template" });
     }
 };
 exports.createExpenseTemplate = createExpenseTemplate;
@@ -169,7 +206,7 @@ const updateExpenseTemplate = async (req, res) => {
         return res.status(400).json({ error: "Invalid id" });
     const existing = await prisma_1.prisma.expenseTemplate.findFirst({
         where: { id, userId },
-        select: { id: true, categoryId: true, expenseType: true },
+        select: { id: true, categoryId: true, expenseType: true, defaultCurrencyId: true },
     });
     if (!existing)
         return res.status(404).json({ error: "Template not found" });
@@ -195,9 +232,30 @@ const updateExpenseTemplate = async (req, res) => {
             return res.status(400).json({ error: "description is required" });
         patch.description = d;
     }
-    // defaultAmountUsd (nullable)
-    if (req.body?.defaultAmountUsd !== undefined) {
-        patch.defaultAmountUsd = parseAmountUsd(req.body.defaultAmountUsd);
+    // defaultAmountUsd / defaultCurrencyId: por monto en USD o por (monto, moneda, tipo de cambio)
+    if (req.body?.defaultAmountUsd !== undefined ||
+        req.body?.defaultAmount !== undefined ||
+        (req.body?.defaultCurrencyId !== undefined && req.body?.defaultAmount !== undefined)) {
+        try {
+            const parsed = parseTemplateAmount({
+                defaultAmountUsd: req.body?.defaultAmountUsd,
+                defaultAmount: req.body?.defaultAmount,
+                defaultCurrencyId: req.body?.defaultCurrencyId ?? existing.defaultCurrencyId ?? "USD",
+                usdUyuRate: req.body?.usdUyuRate,
+            });
+            patch.defaultAmountUsd = parsed.defaultAmountUsd;
+            patch.defaultCurrencyId = parsed.defaultCurrencyId;
+        }
+        catch (e) {
+            return res.status(400).json({ error: e?.message ?? "Invalid amount/currency" });
+        }
+    }
+    else if (req.body?.defaultCurrencyId !== undefined) {
+        patch.defaultCurrencyId = String(req.body.defaultCurrencyId || "USD").toUpperCase();
+    }
+    // showInExpenses: si true, la plantilla se muestra en Gastos (genera borradores)
+    if (req.body?.showInExpenses !== undefined) {
+        patch.showInExpenses = Boolean(req.body.showInExpenses);
     }
     const year = serverYear();
     try {
@@ -206,14 +264,17 @@ const updateExpenseTemplate = async (req, res) => {
             data: patch,
             include: { category: true },
         });
-        // sync planned para meses abiertos del año corriente
-        await syncPlannedAfterTemplateUpdate(userId, year, {
-            id: updated.id,
-            expenseType: updated.expenseType,
-            categoryId: updated.categoryId,
-            description: updated.description,
-            defaultAmountUsd: updated.defaultAmountUsd ?? null,
-        });
+        // sync planned solo si la plantilla está visible en gastos; si pasa a true, generar borradores
+        if (updated.showInExpenses !== false) {
+            await syncPlannedAfterTemplateUpdate(userId, year, {
+                id: updated.id,
+                expenseType: updated.expenseType,
+                categoryId: updated.categoryId,
+                description: updated.description,
+                defaultAmountUsd: updated.defaultAmountUsd ?? null,
+            });
+        }
+        // Si showInExpenses pasó a false, no borramos planned existentes (quedan ocultos por filtro en list)
         res.json(updated);
     }
     catch (e) {
@@ -256,3 +317,29 @@ const deleteExpenseTemplate = async (req, res) => {
     res.status(204).send();
 };
 exports.deleteExpenseTemplate = deleteExpenseTemplate;
+/**
+ * POST /admin/expenseTemplates/set-visibility
+ * Body: { visibleTemplateIds: string[] }
+ * Sets showInExpenses = true for those IDs, false for all other templates of the user.
+ * Used after onboarding wizard so Admin reflects which templates the user chose.
+ */
+const setVisibilityToSelected = async (req, res) => {
+    const userId = req.userId;
+    const visibleTemplateIds = req.body?.visibleTemplateIds;
+    if (!Array.isArray(visibleTemplateIds)) {
+        return res.status(400).json({ error: "visibleTemplateIds array is required" });
+    }
+    const ids = visibleTemplateIds.filter((id) => typeof id === "string");
+    if (ids.length > 0) {
+        await prisma_1.prisma.expenseTemplate.updateMany({
+            where: { userId, id: { in: ids } },
+            data: { showInExpenses: true },
+        });
+    }
+    await prisma_1.prisma.expenseTemplate.updateMany({
+        where: { userId, ...(ids.length > 0 ? { id: { notIn: ids } } : {}) },
+        data: { showInExpenses: false },
+    });
+    res.json({ ok: true });
+};
+exports.setVisibilityToSelected = setVisibilityToSelected;

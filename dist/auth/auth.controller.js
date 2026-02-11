@@ -150,6 +150,16 @@ const registerVerify = async (req, res) => {
                 yieldStartMonth: 1,
             },
         });
+        // Registrar primer ingreso a la app (igual que en login, para que aparezca en Admin → Últimos ingresos)
+        const ip = getClientIp(req);
+        const userAgent = getUserAgent(req);
+        await prisma_1.prisma.loginLog.create({
+            data: {
+                userId: user.id,
+                ip: ip ?? undefined,
+                userAgent: userAgent || undefined,
+            },
+        });
         const token = jsonwebtoken_1.default.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: "1d" });
         return res.status(201).json({
             token,
@@ -292,6 +302,16 @@ const login = async (req, res) => {
         const ok = await bcrypt_1.default.compare(password, user.password);
         if (!ok)
             return res.status(401).json({ error: "Invalid credentials" });
+        // Registrar ingreso a la app (para Admin → Actividad reciente)
+        const ip = getClientIp(req);
+        const userAgent = getUserAgent(req);
+        await prisma_1.prisma.loginLog.create({
+            data: {
+                userId: user.id,
+                ip: ip ?? undefined,
+                userAgent: userAgent || undefined,
+            },
+        });
         const token = jsonwebtoken_1.default.sign({ userId: user.id }, jwtSecret, { expiresIn: "1d" });
         return res.json({
             token,
@@ -315,23 +335,33 @@ const me = async (req, res) => {
     const userId = req.userId;
     const user = await prisma_1.prisma.user.findUnique({
         where: { id: userId },
-        select: { id: true, email: true, role: true, createdAt: true, forceOnboardingNextLogin: true },
+        select: { id: true, email: true, role: true, createdAt: true, forceOnboardingNextLogin: true, onboardingStep: true },
     });
     if (!user)
         return res.status(404).json({ error: "User not found" });
     return res.json(user);
 };
 exports.me = me;
+const ONBOARDING_STEPS = ["welcome", "admin", "expenses", "investments", "budget", "dashboard", "done"];
 /**
- * PATCH /auth/me — clear forceOnboardingNextLogin (used after showing onboarding)
+ * PATCH /auth/me — update forceOnboardingNextLogin and/or onboardingStep
  */
 const patchMe = async (req, res) => {
     const userId = req.userId;
     const body = req.body;
+    const data = {};
     if (body?.forceOnboardingNextLogin === false) {
+        data.forceOnboardingNextLogin = false;
+    }
+    if (body?.onboardingStep != null && typeof body.onboardingStep === "string") {
+        const step = body.onboardingStep.trim();
+        if (ONBOARDING_STEPS.includes(step))
+            data.onboardingStep = step;
+    }
+    if (Object.keys(data).length > 0) {
         await prisma_1.prisma.user.update({
             where: { id: userId },
-            data: { forceOnboardingNextLogin: false },
+            data,
         });
     }
     return res.status(204).end();
