@@ -309,6 +309,8 @@ model PlannedExpense {
   description String
 
   amountUsd   Float?
+  amount      Float?  // UYU amount (locked at edit, avoids display drift)
+  usdUyuRate  Float?  // FX rate when amount was set
   isConfirmed Boolean @default(false)
 
   // Back relation to created real expense (after confirm)
