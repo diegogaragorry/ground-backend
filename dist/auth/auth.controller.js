@@ -335,7 +335,7 @@ const me = async (req, res) => {
     const userId = req.userId;
     const user = await prisma_1.prisma.user.findUnique({
         where: { id: userId },
-        select: { id: true, email: true, role: true, createdAt: true, forceOnboardingNextLogin: true, onboardingStep: true },
+        select: { id: true, email: true, role: true, createdAt: true, forceOnboardingNextLogin: true, onboardingStep: true, mobileWarningDismissed: true, preferredDisplayCurrencyId: true },
     });
     if (!user)
         return res.status(404).json({ error: "User not found" });
@@ -344,7 +344,7 @@ const me = async (req, res) => {
 exports.me = me;
 const ONBOARDING_STEPS = ["welcome", "admin", "expenses", "investments", "budget", "dashboard", "done"];
 /**
- * PATCH /auth/me — update forceOnboardingNextLogin and/or onboardingStep
+ * PATCH /auth/me — update forceOnboardingNextLogin, onboardingStep, mobileWarningDismissed, preferredDisplayCurrencyId
  */
 const patchMe = async (req, res) => {
     const userId = req.userId;
@@ -357,6 +357,15 @@ const patchMe = async (req, res) => {
         const step = body.onboardingStep.trim();
         if (ONBOARDING_STEPS.includes(step))
             data.onboardingStep = step;
+    }
+    if (body?.mobileWarningDismissed === true) {
+        data.mobileWarningDismissed = true;
+    }
+    if (body?.preferredDisplayCurrencyId !== undefined) {
+        const v = body.preferredDisplayCurrencyId == null ? null : String(body.preferredDisplayCurrencyId).trim().toUpperCase();
+        if (v === null || v === "" || v === "USD" || v === "UYU") {
+            data.preferredDisplayCurrencyId = v === "" ? null : v;
+        }
     }
     if (Object.keys(data).length > 0) {
         await prisma_1.prisma.user.update({

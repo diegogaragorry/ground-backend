@@ -168,7 +168,7 @@ export const updateOtherExpenses = async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: "Invalid amount" });
     }
     otherExpensesUsd = amount / body.usdUyuRate;
-  } else if (typeof body.otherExpensesUsd === "number" && Number.isFinite(body.otherExpensesUsd)) {
+  } else if ("otherExpensesUsd" in body && typeof body.otherExpensesUsd === "number" && Number.isFinite(body.otherExpensesUsd)) {
     otherExpensesUsd = body.otherExpensesUsd;
   } else {
     return res.status(400).json({ error: "Provide otherExpensesUsd or (amount, currencyId: 'UYU', usdUyuRate)" });

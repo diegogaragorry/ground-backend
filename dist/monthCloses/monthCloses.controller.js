@@ -252,8 +252,9 @@ const listMonthCloses = async (req, res) => {
     res.json({ year, rows });
 };
 exports.listMonthCloses = listMonthCloses;
-// cierra un mes: guarda snapshot "lockeado" del budget para ese mes
-// En localhost (o ENABLE_REAL_BALANCE_CLOSE): ajusta Otros gastos al balance real y congela snapshots del mes siguiente
+// Cierra un mes: guarda snapshot del budget para ese mes.
+// Siempre congela los snapshots de Portfolios/Cuentas del mes que se cierra (valor de cierre = valor de comienzo del mes siguiente).
+// En localhost (o ENABLE_REAL_BALANCE_CLOSE): además ajusta Otros gastos al balance real.
 const closeMonth = async (req, res) => {
     try {
         const userId = req.userId;
@@ -321,26 +322,26 @@ const closeMonth = async (req, res) => {
             });
             expensesUsd = baseExpensesUsd + otherExpensesProposed;
             balanceUsd = realBalanceUsd;
-            const nextYear = month === 12 ? year + 1 : year;
-            const nextMonth = month === 12 ? 1 : month + 1;
-            const investmentIds = await prisma_1.prisma.investment.findMany({
-                where: { userId },
-                select: { id: true },
-            });
-            if (investmentIds.length > 0) {
-                await prisma_1.prisma.investmentSnapshot.updateMany({
-                    where: {
-                        investmentId: { in: investmentIds.map((i) => i.id) },
-                        year: nextYear,
-                        month: nextMonth,
-                    },
-                    data: { isClosed: true },
-                });
-            }
         }
         else {
             expensesUsd = plan?.amountUsd ?? actualExpenses;
             balanceUsd = incomeUsd - expensesUsd + investmentEarningsUsd;
+        }
+        // Congelar snapshots del mes que se cierra (Portfolios y Cuentas): el cierre de M
+        // fija el "valor de comienzo" de M+1; en M+1 se siguen permitiendo movimientos y editar cierre.
+        const investmentIds = await prisma_1.prisma.investment.findMany({
+            where: { userId },
+            select: { id: true },
+        });
+        if (investmentIds.length > 0) {
+            await prisma_1.prisma.investmentSnapshot.updateMany({
+                where: {
+                    investmentId: { in: investmentIds.map((i) => i.id) },
+                    year,
+                    month,
+                },
+                data: { isClosed: true },
+            });
         }
         const row = await prisma_1.prisma.monthClose.upsert({
             where: { userId_year_month: { userId, year, month } },
@@ -383,6 +384,21 @@ const reopenMonth = async (req, res) => {
     await prisma_1.prisma.monthClose.deleteMany({
         where: { userId, year, month },
     });
+    // Permitir de nuevo editar snapshots de ese mes (Portfolios y Cuentas)
+    const investmentIds = await prisma_1.prisma.investment.findMany({
+        where: { userId },
+        select: { id: true },
+    });
+    if (investmentIds.length > 0) {
+        await prisma_1.prisma.investmentSnapshot.updateMany({
+            where: {
+                investmentId: { in: investmentIds.map((i) => i.id) },
+                year,
+                month,
+            },
+            data: { isClosed: false },
+        });
+    }
     res.status(204).send();
 };
 exports.reopenMonth = reopenMonth;

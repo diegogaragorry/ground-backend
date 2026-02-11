@@ -103,7 +103,10 @@ const listPlannedExpenses = async (req, res) => {
     const rows = await prisma_1.prisma.plannedExpense.findMany({
         where: { userId, year: ym.year, month: ym.month },
         orderBy: [{ expenseType: "asc" }, { categoryId: "asc" }, { description: "asc" }],
-        include: { category: true },
+        include: {
+            category: true,
+            template: { select: { defaultCurrencyId: true } },
+        },
     });
     // Ocultar borradores de plantillas con showInExpenses = false
     const templateIds = [...new Set(rows.map((r) => r.templateId).filter(Boolean))];
@@ -185,7 +188,7 @@ const confirmPlannedExpense = async (req, res) => {
         return res.status(400).json({ error: "Invalid id" });
     const pe = await prisma_1.prisma.plannedExpense.findFirst({
         where: { id, userId },
-        include: { category: true, expense: true },
+        include: { category: true, expense: true, template: { select: { defaultCurrencyId: true } } },
     });
     if (!pe)
         return res.status(404).json({ error: "PlannedExpense not found" });
@@ -204,6 +207,19 @@ const confirmPlannedExpense = async (req, res) => {
     if (!Number.isFinite(amountUsd) || amountUsd <= 0) {
         return res.status(400).json({ error: "amountUsd must be > 0 to confirm" });
     }
+    const isUyu = pe.template?.defaultCurrencyId === "UYU";
+    let currencyId = "USD";
+    let amount = amountUsd;
+    let usdUyuRate = null;
+    if (isUyu) {
+        const rate = Number(req.body?.usdUyuRate);
+        if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
+            return res.status(400).json({ error: "usdUyuRate is required and must be > 0 when the template is in UYU" });
+        }
+        currencyId = "UYU";
+        amount = Math.round(amountUsd * rate);
+        usdUyuRate = rate;
+    }
     const date = new Date(Date.UTC(pe.year, pe.month, 0, 12, 0, 0));
     const expenseId = await prisma_1.prisma.$transaction(async (tx) => {
         const fresh = await tx.plannedExpense.findUnique({
@@ -220,11 +236,11 @@ const confirmPlannedExpense = async (req, res) => {
             data: {
                 userId,
                 categoryId: pe.categoryId,
-                currencyId: "USD",
+                currencyId,
                 description: pe.description,
-                amount: amountUsd,
+                amount,
                 amountUsd,
-                usdUyuRate: null,
+                usdUyuRate,
                 date,
                 expenseType: pe.expenseType,
                 plannedExpenseId: pe.id,

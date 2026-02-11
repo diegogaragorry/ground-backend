@@ -100,6 +100,21 @@ const upsertSnapshotForMonth = async (req, res) => {
     catch (e) {
         return res.status(400).json({ error: e?.message ?? "Invalid FX rate" });
     }
+    // Al crear el snapshot de este mes: si el mes anterior está cerrado, el patrimonio inicial queda fijado al cierre del anterior.
+    const prevYear = ym.month === 1 ? ym.year - 1 : ym.year;
+    const prevMonth = ym.month === 1 ? 12 : ym.month - 1;
+    const prevSnapshot = await prisma_1.prisma.investmentSnapshot.findUnique({
+        where: {
+            investmentId_year_month: {
+                investmentId,
+                year: prevYear,
+                month: prevMonth,
+            },
+        },
+    });
+    const useFrozenStart = !existing && prevSnapshot?.isClosed;
+    const capitalToUse = useFrozenStart ? Number(prevSnapshot.capital ?? 0) : closingCapital;
+    const capitalUsdToUse = useFrozenStart ? Number(prevSnapshot.capitalUsd ?? 0) : fx.amountUsd;
     const snap = await prisma_1.prisma.investmentSnapshot.upsert({
         where: {
             investmentId_year_month: {
@@ -112,8 +127,8 @@ const upsertSnapshotForMonth = async (req, res) => {
             investmentId,
             year: ym.year,
             month: ym.month,
-            capital: closingCapital,
-            capitalUsd: fx.amountUsd,
+            capital: capitalToUse,
+            capitalUsd: capitalUsdToUse,
             isClosed: false,
         },
         update: {
