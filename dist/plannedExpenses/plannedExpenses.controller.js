@@ -31,6 +31,18 @@ function parseAmountUsd(v) {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
 }
+function parseAmount(v) {
+    if (v == null || v === "")
+        return null;
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
+}
+function parseUsdUyuRate(v) {
+    if (v == null || v === "")
+        return null;
+    const n = Number(v);
+    return Number.isFinite(n) && n > 0 ? n : null;
+}
 async function openMonthsForYear(userId, year) {
     const closes = await prisma_1.prisma.monthClose.findMany({
         where: { userId, year },
@@ -131,7 +143,7 @@ const updatePlannedExpense = async (req, res) => {
         return res.status(400).json({ error: "Invalid id" });
     const pe = await prisma_1.prisma.plannedExpense.findFirst({
         where: { id, userId },
-        select: { id: true, isConfirmed: true, year: true, month: true, categoryId: true },
+        include: { template: { select: { defaultCurrencyId: true } } },
     });
     if (!pe)
         return res.status(404).json({ error: "PlannedExpense not found" });
@@ -146,8 +158,22 @@ const updatePlannedExpense = async (req, res) => {
         return res.status(409).json({ error: "Month is closed. Planned expenses cannot be edited." });
     }
     const patch = {};
+    const isUyu = pe.template?.defaultCurrencyId === "UYU";
     if (req.body?.amountUsd !== undefined) {
         patch.amountUsd = parseAmountUsd(req.body.amountUsd);
+    }
+    // UYU: lock amount + rate to avoid display drift when FX changes
+    if (isUyu) {
+        const amountVal = parseAmount(req.body?.amount);
+        const rateVal = parseUsdUyuRate(req.body?.usdUyuRate);
+        if (amountVal != null && rateVal != null) {
+            patch.amount = amountVal;
+            patch.usdUyuRate = rateVal;
+            patch.amountUsd = Math.round((amountVal / rateVal) * 100) / 100;
+        }
+        else if (amountVal != null || rateVal != null) {
+            return res.status(400).json({ error: "For UYU, provide both amount and usdUyuRate together" });
+        }
     }
     if (req.body?.description != null) {
         const d = String(req.body.description ?? "").trim();
@@ -203,7 +229,7 @@ const confirmPlannedExpense = async (req, res) => {
     if (pe.isConfirmed && pe.expense) {
         return res.status(200).json({ expenseId: pe.expense.id });
     }
-    const amountUsd = Number(pe.amountUsd ?? 0);
+    let amountUsd = Number(pe.amountUsd ?? 0);
     if (!Number.isFinite(amountUsd) || amountUsd <= 0) {
         return res.status(400).json({ error: "amountUsd must be > 0 to confirm" });
     }
@@ -212,13 +238,23 @@ const confirmPlannedExpense = async (req, res) => {
     let amount = amountUsd;
     let usdUyuRate = null;
     if (isUyu) {
-        const rate = Number(req.body?.usdUyuRate);
-        if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
+        const peAmount = pe.amount;
+        const peRate = pe.usdUyuRate;
+        const bodyRate = Number(req.body?.usdUyuRate);
+        const rate = peAmount != null && peRate != null && Number.isFinite(peAmount) && Number.isFinite(peRate) && peRate > 0
+            ? peRate
+            : Number.isFinite(bodyRate) && bodyRate > 0
+                ? bodyRate
+                : NaN;
+        if (!Number.isFinite(rate) || rate <= 0) {
             return res.status(400).json({ error: "usdUyuRate is required and must be > 0 when the template is in UYU" });
         }
         currencyId = "UYU";
-        amount = Math.round(amountUsd * rate);
+        amount = peAmount != null && Number.isFinite(peAmount) && peAmount > 0 ? Math.round(peAmount) : Math.round(amountUsd * rate);
         usdUyuRate = rate;
+        if (peAmount != null && Number.isFinite(peAmount) && peAmount > 0) {
+            amountUsd = Math.round((peAmount / rate) * 100) / 100;
+        }
     }
     const date = new Date(Date.UTC(pe.year, pe.month, 0, 12, 0, 0));
     const expenseId = await prisma_1.prisma.$transaction(async (tx) => {
