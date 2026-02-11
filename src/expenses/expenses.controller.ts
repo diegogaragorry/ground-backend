@@ -41,7 +41,7 @@ function normalizeToMonthStartUTC(dateStr: any): Date | null {
 
 export const createExpense = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
-  const { description, amount, date, categoryId, currencyId, usdUyuRate } = req.body ?? {};
+  const { description, amount, date, categoryId, currencyId, usdUyuRate, expenseType: bodyExpenseType } = req.body ?? {};
 
   if (!description || typeof description !== "string") {
     return res.status(400).json({ error: "description is required" });
@@ -80,6 +80,10 @@ export const createExpense = async (req: AuthRequest, res: Response) => {
     return res.status(400).json({ error: e?.message ?? "Invalid FX rate" });
   }
 
+  const expenseType = bodyExpenseType === "FIXED" || bodyExpenseType === "VARIABLE"
+    ? bodyExpenseType
+    : (category?.expenseType ?? "VARIABLE");
+
   const expense = await prisma.expense.create({
     data: {
       userId,
@@ -90,6 +94,7 @@ export const createExpense = async (req: AuthRequest, res: Response) => {
       amountUsd: fx.amountUsd,
       usdUyuRate: fx.usdUyuRate,
       date: monthDate,
+      expenseType,
     },
     include: { category: true, currency: true },
   });
