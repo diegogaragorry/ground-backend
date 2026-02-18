@@ -394,7 +394,7 @@ export const annualBudget = async (req: AuthRequest, res: Response) => {
     return projectedNextJanPortfolio - (portfolioNW[11] ?? 0);
   });
 
-  // -------- Flows by month (Portfolio only, USD only)
+  // -------- Flows by month (Portfolio only, USD + UYU converted to USD)
   const movementRows = await prisma.investmentMovement.findMany({
     where: {
       investment: { userId, type: "PORTFOLIO" },
@@ -408,7 +408,16 @@ export const annualBudget = async (req: AuthRequest, res: Response) => {
     const m = new Date(mv.date).getUTCMonth() + 1;
     if (m < 1 || m > 12) continue;
 
-    const amtUsd = mv.currencyId === "USD" ? Number(mv.amount ?? 0) : 0;
+    const cur = (mv.currencyId ?? "USD").toUpperCase();
+    let amtUsd: number;
+    if (cur === "USD") {
+      amtUsd = Number(mv.amount ?? 0);
+    } else if (cur === "UYU") {
+      const rate = fxByMonth.get(m) ?? Number(process.env.DEFAULT_USD_UYU_RATE ?? 38);
+      amtUsd = rate > 0 ? Number(mv.amount ?? 0) / rate : 0;
+    } else {
+      amtUsd = 0;
+    }
 
     if (mv.type === "deposit") flowsByMonth[m - 1] += amtUsd;
     else if (mv.type === "withdrawal") flowsByMonth[m - 1] -= amtUsd;

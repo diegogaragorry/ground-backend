@@ -243,11 +243,17 @@ export const previewMonthClose = async (req: AuthRequest, res: Response) => {
     },
     select: { type: true, amount: true, currencyId: true },
   });
+  const usdUyuRate = await getUsdUyuRateForMonthOrDefault(userId, year, month);
   const flowsUsd = mvRows.reduce((acc, r) => {
-    if ((r.currencyId ?? "") !== "USD") return acc;
-    const amt = Number(r.amount ?? 0);
-    if (r.type === "deposit") return acc + amt;
-    if (r.type === "withdrawal") return acc - amt;
+    const cur = (r.currencyId ?? "USD").toUpperCase();
+    const amtUsd =
+      cur === "USD"
+        ? Number(r.amount ?? 0)
+        : cur === "UYU" && usdUyuRate > 0
+          ? Number(r.amount ?? 0) / usdUyuRate
+          : 0;
+    if (r.type === "deposit") return acc + amtUsd;
+    if (r.type === "withdrawal") return acc - amtUsd;
     return acc;
   }, 0);
   const variation = portfolioVariation[month - 1] ?? 0;
@@ -333,11 +339,17 @@ export const closeMonth = async (req: AuthRequest, res: Response) => {
     },
     select: { type: true, amount: true, currencyId: true },
   });
+  const usdUyuRate = await getUsdUyuRateForMonthOrDefault(userId, year, month);
   const flowsUsd = mvRows.reduce((acc, r) => {
-    if ((r.currencyId ?? "") !== "USD") return acc;
-    const amt = Number(r.amount ?? 0);
-    if (r.type === "deposit") return acc + amt;
-    if (r.type === "withdrawal") return acc - amt;
+    const cur = (r.currencyId ?? "USD").toUpperCase();
+    const amtUsd =
+      cur === "USD"
+        ? Number(r.amount ?? 0)
+        : cur === "UYU" && usdUyuRate > 0
+          ? Number(r.amount ?? 0) / usdUyuRate
+          : 0;
+    if (r.type === "deposit") return acc + amtUsd;
+    if (r.type === "withdrawal") return acc - amtUsd;
     return acc;
   }, 0);
   const variation = portfolioVariation[month - 1] ?? 0;
