@@ -337,12 +337,10 @@ export async function buildAnnualData(userId: string, year: number): Promise<{ y
     select: { investmentId: true, month: true, capital: true, capitalUsd: true },
   });
 
-  // FX por mes (para convertir UYU si falta capitalUsd)
+  // FX por mes (para convertir UYU si falta capitalUsd) — en paralelo
+  const fxValues = await Promise.all(months12.map((m) => getUsdUyuRateForMonthOrDefault(userId, year, m)));
   const fxByMonth = new Map<number, number>();
-  for (const m of months12) {
-    // eslint-disable-next-line no-await-in-loop
-    fxByMonth.set(m, await getUsdUyuRateForMonthOrDefault(userId, year, m));
-  }
+  months12.forEach((m, i) => fxByMonth.set(m, fxValues[i]));
 
   function snapUsdFor(inv: InvLite, snap: { capital: number | null; capitalUsd: number | null }, m: number) {
     if (snap.capitalUsd != null) return snap.capitalUsd;
