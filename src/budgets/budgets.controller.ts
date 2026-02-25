@@ -258,11 +258,7 @@ function buildInvMonthMap(invId: string, rows: SnapRow[]) {
   return m;
 }
 
-export const annualBudget = async (req: AuthRequest, res: Response) => {
-  const userId = req.userId!;
-  const year = parseYear(req.query);
-  if (!year) return res.status(400).json({ error: "Provide year query param (e.g., ?year=2026)" });
-
+export async function buildAnnualData(userId: string, year: number): Promise<{ year: number; months: any[] }> {
   // -------- MonthCloses (locked)
   const closes = await prisma.monthClose.findMany({
     where: { userId, year },
@@ -550,5 +546,134 @@ export const annualBudget = async (req: AuthRequest, res: Response) => {
     prevBalance = balanceUsd;
   }
 
-  res.json({ year, months });
+  return { year, months };
+}
+
+export const annualBudget = async (req: AuthRequest, res: Response) => {
+  const userId = req.userId!;
+  const year = parseYear(req.query);
+  if (!year) return res.status(400).json({ error: "Provide year query param (e.g., ?year=2026)" });
+  const data = await buildAnnualData(userId, year);
+  res.json(data);
+};
+
+/** GET /budgets/page-data?year=YYYY - single payload for Presupuestos: annual, income, planned, expenses, investments, snapshots, movements. */
+export const pageData = async (req: AuthRequest, res: Response) => {
+  const userId = req.userId!;
+  const year = parseYear(req.query);
+  if (!year) return res.status(400).json({ error: "Provide year query param (e.g., ?year=2026)" });
+  const prevYear = year - 1;
+  const yearStart = new Date(Date.UTC(year, 0, 1, 0, 0, 0));
+  const yearEnd = new Date(Date.UTC(year + 1, 0, 1, 0, 0, 0));
+  const prevYearStart = new Date(Date.UTC(prevYear, 0, 1, 0, 0, 0));
+  const prevYearEnd = new Date(Date.UTC(prevYear + 1, 0, 1, 0, 0, 0));
+
+  const [annual, incomeRows, plannedRows, expenses, investments, movementRows] = await Promise.all([
+    buildAnnualData(userId, year),
+    prisma.income.findMany({
+      where: { userId, year },
+      orderBy: { month: "asc" },
+      select: { id: true, month: true, amountUsd: true, nominalUsd: true, extraordinaryUsd: true, taxesUsd: true, encryptedPayload: true },
+    }),
+    prisma.plannedExpense.findMany({
+      where: { userId, year },
+      select: { month: true, amountUsd: true, encryptedPayload: true },
+    }),
+    prisma.expense.findMany({
+      where: { userId, date: { gte: yearStart, lt: yearEnd } },
+      orderBy: { date: "desc" },
+      include: { category: { select: { id: true, name: true, nameKey: true, expenseType: true } }, currency: true },
+    }),
+    prisma.investment.findMany({
+      where: { userId },
+      select: { id: true, type: true, currencyId: true, targetAnnualReturn: true, yieldStartYear: true, yieldStartMonth: true },
+    }),
+    prisma.investmentMovement.findMany({
+      where: { investment: { userId }, date: { gte: yearStart, lt: yearEnd } },
+      orderBy: [{ date: "asc" }],
+      select: { id: true, investmentId: true, date: true, type: true, amount: true, currencyId: true, encryptedPayload: true },
+    }),
+  ]);
+
+  const income = {
+    year,
+    rows: incomeRows.map((r) => {
+      const nominal = r.nominalUsd ?? r.amountUsd ?? 0;
+      const extraordinary = r.extraordinaryUsd ?? 0;
+      const taxes = r.taxesUsd ?? 0;
+      const totalUsd = r.nominalUsd != null ? nominal + extraordinary - taxes : (r.amountUsd ?? 0);
+      return { id: r.id, month: r.month, totalUsd, encryptedPayload: r.encryptedPayload ?? undefined };
+    }),
+  };
+
+  const planned = { year, rows: plannedRows.map((r) => ({ month: r.month, amountUsd: r.amountUsd ?? null, encryptedPayload: r.encryptedPayload ?? undefined })) };
+
+  const byMonth: typeof expenses[] = Array.from({ length: 12 }, () => []);
+  for (const e of expenses) {
+    const m = e.date.getUTCMonth();
+    if (m >= 0 && m < 12) byMonth[m].push(e);
+  }
+  const expensesByMonth = { byMonth };
+
+  const portfolios = investments.filter((i) => i.type === "PORTFOLIO");
+  const snapshotsYear = await Promise.all(
+    portfolios.map((inv) =>
+      prisma.investmentSnapshot.findMany({
+        where: { investmentId: inv.id, year },
+        orderBy: { month: "asc" },
+        select: { id: true, investmentId: true, year: true, month: true, capital: true, capitalUsd: true, encryptedPayload: true, isClosed: true },
+      })
+    )
+  );
+  const snapshotsPrevYear = await Promise.all(
+    portfolios.map((inv) =>
+      prisma.investmentSnapshot.findMany({
+        where: { investmentId: inv.id, year: prevYear },
+        orderBy: { month: "asc" },
+        select: { id: true, investmentId: true, year: true, month: true, capital: true, capitalUsd: true, encryptedPayload: true, isClosed: true },
+      })
+    )
+  );
+
+  const snapToMonth = (snaps: { month: number; capital: number | null; capitalUsd: number | null; encryptedPayload: string | null }[]) => {
+    const map = new Map(snaps.map((s) => [s.month, s]));
+    return Array.from({ length: 12 }, (_, i) => i + 1).map((m) => {
+      const s = map.get(m);
+      return s
+        ? { month: m, closingCapital: s.capital ?? null, closingCapitalUsd: s.capitalUsd ?? null, encryptedPayload: s.encryptedPayload ?? undefined }
+        : { month: m, closingCapital: null, closingCapitalUsd: null, encryptedPayload: undefined };
+    });
+  };
+
+  const movements = {
+    year,
+    rows: movementRows.map((mv) => ({
+      id: mv.id,
+      investmentId: mv.investmentId,
+      date: mv.date.toISOString().slice(0, 10),
+      month: mv.date.getUTCMonth() + 1,
+      type: mv.type,
+      amount: mv.amount,
+      currencyId: mv.currencyId,
+      encryptedPayload: mv.encryptedPayload ?? undefined,
+    })),
+  };
+
+  res.json({
+    annual,
+    income,
+    planned,
+    expensesByMonth,
+    investments: investments.map((i) => ({
+      id: i.id,
+      type: i.type,
+      currencyId: i.currencyId,
+      targetAnnualReturn: i.targetAnnualReturn,
+      yieldStartYear: i.yieldStartYear,
+      yieldStartMonth: i.yieldStartMonth,
+    })),
+    snapshotsYear: snapshotsYear.map(snapToMonth),
+    snapshotsPrevYear: snapshotsPrevYear.map(snapToMonth),
+    movements,
+  });
 };
