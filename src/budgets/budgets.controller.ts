@@ -53,14 +53,19 @@ async function getUsdUyuRateForMonthOrDefault(userId: string, year: number, mont
 
 export const upsertBudget = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
-  const { year, month, categoryId, currencyId, amount } = req.body ?? {};
+  const { year, month, categoryId, currencyId, amount, encryptedPayload } = req.body ?? {};
 
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
     return res.status(400).json({ error: "year and month are required (month 1-12)" });
   }
   if (!categoryId || typeof categoryId !== "string") return res.status(400).json({ error: "categoryId is required" });
   if (!currencyId || typeof currencyId !== "string") return res.status(400).json({ error: "currencyId is required" });
-  if (typeof amount !== "number" || amount < 0) return res.status(400).json({ error: "amount must be a number >= 0" });
+  if (typeof amount !== "number" || !Number.isFinite(amount) || amount < 0) {
+    return res.status(400).json({ error: "amount must be a number >= 0" });
+  }
+
+  const hasEncrypted = typeof encryptedPayload === "string" && encryptedPayload.length > 0;
+  const amountToStore = hasEncrypted ? 0 : amount;
 
   const category = await prisma.category.findFirst({ where: { id: categoryId, userId } });
   if (!category) return res.status(403).json({ error: "Invalid categoryId for this user" });
@@ -78,8 +83,19 @@ export const upsertBudget = async (req: AuthRequest, res: Response) => {
         currencyId,
       },
     },
-    update: { amount },
-    create: { userId, year, month, categoryId, currencyId, amount },
+    update: {
+      amount: amountToStore,
+      encryptedPayload: hasEncrypted ? encryptedPayload : null,
+    },
+    create: {
+      userId,
+      year,
+      month,
+      categoryId,
+      currencyId,
+      amount: amountToStore,
+      ...(hasEncrypted ? { encryptedPayload: encryptedPayload } : {}),
+    },
   });
 
   res.status(200).json(budget);
@@ -137,6 +153,7 @@ export const budgetReport = async (req: AuthRequest, res: Response) => {
       actual,
       diff,
       pct,
+      encryptedPayload: (b as { encryptedPayload?: string | null }).encryptedPayload ?? undefined,
     };
   });
 
@@ -152,17 +169,24 @@ export const updateOtherExpenses = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
   const year = Number(req.params.year);
   const month = Number(req.params.month);
-  const body = req.body as
-    | { otherExpensesUsd?: number }
-    | { amount?: number; currencyId?: string; usdUyuRate?: number };
+  const body = req.body as {
+    otherExpensesUsd?: number;
+    encryptedPayload?: string;
+    amount?: number;
+    currencyId?: string;
+    usdUyuRate?: number;
+  };
 
   if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
     return res.status(400).json({ error: "Invalid year or month" });
   }
 
+  const hasEncrypted = typeof body.encryptedPayload === "string" && body.encryptedPayload.length > 0;
   let otherExpensesUsd: number;
 
-  if ("amount" in body && body.currencyId === "UYU" && typeof body.usdUyuRate === "number" && body.usdUyuRate > 0) {
+  if (hasEncrypted) {
+    otherExpensesUsd = 0;
+  } else if ("amount" in body && body.currencyId === "UYU" && typeof body.usdUyuRate === "number" && body.usdUyuRate > 0) {
     const amount = Number(body.amount);
     if (!Number.isFinite(amount)) {
       return res.status(400).json({ error: "Invalid amount" });
@@ -171,22 +195,31 @@ export const updateOtherExpenses = async (req: AuthRequest, res: Response) => {
   } else if ("otherExpensesUsd" in body && typeof body.otherExpensesUsd === "number" && Number.isFinite(body.otherExpensesUsd)) {
     otherExpensesUsd = body.otherExpensesUsd;
   } else {
-    return res.status(400).json({ error: "Provide otherExpensesUsd or (amount, currencyId: 'UYU', usdUyuRate)" });
+    return res.status(400).json({ error: "Provide otherExpensesUsd or (amount, currencyId: 'UYU', usdUyuRate) or encryptedPayload" });
   }
 
-  // permitimos negativos (ej. ajustes o ingresos extra contabilizados como "otros")
-
-  const closed = await prisma.monthClose.findFirst({
-    where: { userId, year, month },
-    select: { id: true },
-  });
-  if (closed) return res.status(409).json({ error: "Month is closed" });
+  if (!hasEncrypted) {
+    const closed = await prisma.monthClose.findFirst({
+      where: { userId, year, month },
+      select: { id: true },
+    });
+    if (closed) return res.status(409).json({ error: "Month is closed" });
+  }
 
   const row = await prisma.monthlyBudget.upsert({
     where: { userId_year_month: { userId, year, month } },
-    update: { otherExpensesUsd },
-    create: { userId, year, month, otherExpensesUsd },
-    select: { userId: true, year: true, month: true, otherExpensesUsd: true },
+    update: {
+      otherExpensesUsd,
+      ...(hasEncrypted && body.encryptedPayload ? { encryptedPayload: body.encryptedPayload } : {}),
+    },
+    create: {
+      userId,
+      year,
+      month,
+      otherExpensesUsd,
+      ...(hasEncrypted && body.encryptedPayload ? { encryptedPayload: body.encryptedPayload } : {}),
+    },
+    select: { userId: true, year: true, month: true, otherExpensesUsd: true, encryptedPayload: true },
   });
 
   res.json(row);
@@ -272,14 +305,19 @@ export const annualBudget = async (req: AuthRequest, res: Response) => {
     plannedByMonth.set(p.month, (plannedByMonth.get(p.month) ?? 0) + (p.amountUsd ?? 0));
   }
 
-  // -------- Other expenses (manual) per month from MonthlyBudget
+  // -------- Other expenses (manual) per month from MonthlyBudget (include encryptedPayload for E2EE)
   const otherRows = await prisma.monthlyBudget.findMany({
     where: { userId, year },
-    select: { month: true, otherExpensesUsd: true },
+    select: { month: true, otherExpensesUsd: true, encryptedPayload: true },
   });
 
-  const otherByMonth = new Map<number, number>();
-  for (const r of otherRows) otherByMonth.set(r.month, r.otherExpensesUsd ?? 0);
+  const otherByMonth = new Map<number, { otherExpensesUsd: number; encryptedPayload?: string | null }>();
+  for (const r of otherRows) {
+    otherByMonth.set(r.month, {
+      otherExpensesUsd: r.otherExpensesUsd ?? 0,
+      encryptedPayload: r.encryptedPayload ?? undefined,
+    });
+  }
 
   // -------- Investments (baseline total NW + portfolio earnings)
   const invs = await prisma.investment.findMany({
@@ -448,23 +486,27 @@ export const annualBudget = async (req: AuthRequest, res: Response) => {
 
     const locked = closeByMonth.get(m);
     if (locked) {
-      // Para meses cerrados, mostramos base+other desagregado (other viene de MonthlyBudget)
-      const otherExpensesUsd = otherByMonth.get(m) ?? 0;
+      const otherData = otherByMonth.get(m);
+      const otherExpensesUsd = otherData?.otherExpensesUsd ?? 0;
       const baseExpensesUsd = Math.max(0, (locked.expensesUsd ?? 0) - otherExpensesUsd);
+      const lockedEncryptedPayload = (locked as { encryptedPayload?: string | null }).encryptedPayload ?? undefined;
+      const isClosed = (locked as { isClosed?: boolean }).isClosed !== false;
 
       months.push({
         month: m,
-        isClosed: true,
+        isClosed,
         incomeUsd: locked.incomeUsd,
 
         baseExpensesUsd,
         otherExpensesUsd,
+        otherExpensesEncryptedPayload: otherData?.encryptedPayload ?? undefined,
         expensesUsd: locked.expensesUsd,
 
         investmentEarningsUsd: locked.investmentEarningsUsd,
         balanceUsd: locked.balanceUsd,
-        netWorthUsd: locked.netWorthStartUsd, // START
+        netWorthUsd: locked.netWorthStartUsd,
         source: "locked" as const,
+        ...(lockedEncryptedPayload ? { lockedEncryptedPayload } : {}),
       });
 
       prevNetWorthStart = locked.netWorthStartUsd;
@@ -479,7 +521,8 @@ export const annualBudget = async (req: AuthRequest, res: Response) => {
     const plannedBase = plannedByMonth.get(m) ?? 0;
     const baseExpensesUsd = actualBase > 0 ? actualBase : plannedBase;
 
-    const otherExpensesUsd = otherByMonth.get(m) ?? 0;
+    const otherData = otherByMonth.get(m);
+    const otherExpensesUsd = otherData?.otherExpensesUsd ?? 0;
     const expensesUsd = baseExpensesUsd + otherExpensesUsd;
 
     const investmentEarningsUsd = portfolioRealReturns[idx] ?? 0;
@@ -494,11 +537,12 @@ export const annualBudget = async (req: AuthRequest, res: Response) => {
 
       baseExpensesUsd,
       otherExpensesUsd,
+      otherExpensesEncryptedPayload: otherData?.encryptedPayload ?? undefined,
       expensesUsd,
 
       investmentEarningsUsd,
       balanceUsd,
-      netWorthUsd: netWorthStartUsd, // START
+      netWorthUsd: netWorthStartUsd,
       source: "computed" as const,
     });
 

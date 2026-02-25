@@ -5,7 +5,9 @@ import crypto from "crypto";
 import { prisma } from "../lib/prisma";
 import type { AuthRequest } from "../middlewares/requireAuth";
 import { bootstrapUserData } from "./bootstrapUserData";
+import { decryptRecoveryPackage } from "../lib/recoveryCrypto";
 import { sendSignupCodeEmail, sendPasswordResetCodeEmail } from "../lib/mailer";
+import { sendSms } from "../lib/sms";
 
 function normalizeEmail(email: string) {
   return String(email || "").trim().toLowerCase();
@@ -18,6 +20,11 @@ function gen6() {
 function hashCode(email: string, code: string) {
   const pepper = process.env.OTP_PEPPER || "dev_pepper_change_me";
   return crypto.createHash("sha256").update(`${pepper}:${email}:${code}`).digest("hex");
+}
+
+function hashPhoneCode(userId: string, phone: string, code: string) {
+  const pepper = process.env.OTP_PEPPER || "dev_pepper_change_me";
+  return crypto.createHash("sha256").update(`${pepper}:phone:${userId}:${phone}:${code}`).digest("hex");
 }
 
 function getClientIp(req: Request) {
@@ -82,13 +89,13 @@ export const registerRequestCode = async (req: Request, res: Response) => {
 
     // Responder al instante; enviar email en segundo plano (evita 1–2 min de "Sending...")
     sendSignupCodeEmail(email, code).catch((err) => {
-      console.error("sendSignupCodeEmail background error:", err);
+      console.error("sendSignupCodeEmail background error");
     });
 
     return res.status(200).json({ ok: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("registerRequestCode error:", err);
+    console.error("registerRequestCode error");
     return res.status(500).json({
       error: "Could not send verification code",
       detail: message, // incluir siempre para depurar (quitar en prod si no querés exponer)
@@ -153,10 +160,11 @@ export const registerVerify = async (req: Request, res: Response) => {
   });
 
   const hashedPassword = await bcrypt.hash(password, 10);
+  const encryptionSalt = typeof req.body?.encryptionSalt === "string" ? String(req.body.encryptionSalt).trim() || undefined : undefined;
 
   try {
     const user = await prisma.user.create({
-      data: { email, password: hashedPassword, role: "USER" },
+      data: { email, password: hashedPassword, role: "USER", encryptionSalt: encryptionSalt || undefined },
     });
 
     await bootstrapUserData(user.id);
@@ -186,13 +194,23 @@ export const registerVerify = async (req: Request, res: Response) => {
 
     const token = jwt.sign({ userId: user.id }, process.env.JWT_SECRET as string, { expiresIn: "1d" });
 
+    const created = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: { id: true, email: true, role: true, encryptionSalt: true, encryptedRecoveryPackage: true, phoneVerifiedAt: true },
+    });
     return res.status(201).json({
       token,
-      user: { id: user.id, email: user.email, role: user.role },
+      user: {
+        id: created!.id,
+        email: created!.email,
+        role: created!.role,
+        encryptionSalt: created!.encryptionSalt ?? undefined,
+        recoveryEnabled: !!(created!.encryptedRecoveryPackage && created!.phoneVerifiedAt),
+      },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("Register verify error:", err);
+    console.error("Register verify error");
     return res.status(500).json({
       error: "Error creating user",
       detail: message,
@@ -244,13 +262,13 @@ export const forgotPasswordRequestCode = async (req: Request, res: Response) => 
 
     // Responder al instante; enviar email en segundo plano
     sendPasswordResetCodeEmail(email, code).catch((err) => {
-      console.error("sendPasswordResetCodeEmail background error:", err);
+      console.error("sendPasswordResetCodeEmail background error");
     });
 
     return res.status(200).json({ ok: true });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("forgotPasswordRequestCode error:", err);
+    console.error("forgotPasswordRequestCode error");
     return res.status(500).json({ error: "Could not send reset code", detail: message });
   }
 };
@@ -337,11 +355,32 @@ export const login = async (req: Request, res: Response) => {
       });
     }
 
-    const user = await prisma.user.findUnique({ where: { email } });
+    const user = await prisma.user.findUnique({
+      where: { email },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        password: true,
+        encryptionSalt: true,
+        encryptedRecoveryPackage: true,
+        phoneVerifiedAt: true,
+      },
+    });
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
     const ok = await bcrypt.compare(password, user.password);
     if (!ok) return res.status(401).json({ error: "Invalid credentials" });
+
+    // Usuarios creados antes de E2EE: activar cifrado en el primer login con contraseña
+    let encryptionSalt = user.encryptionSalt;
+    if (!encryptionSalt) {
+      encryptionSalt = crypto.randomBytes(16).toString("base64");
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { encryptionSalt },
+      });
+    }
 
     // Registrar ingreso a la app (para Admin → Actividad reciente)
     const ip = getClientIp(req);
@@ -356,13 +395,30 @@ export const login = async (req: Request, res: Response) => {
 
     const token = jwt.sign({ userId: user.id }, jwtSecret, { expiresIn: "1d" });
 
+    const recoveryEnabled = !!(user.encryptedRecoveryPackage && user.phoneVerifiedAt);
+    let encryptionKey: string | undefined;
+    if (user.encryptedRecoveryPackage) {
+      try {
+        encryptionKey = decryptRecoveryPackage(user.encryptedRecoveryPackage);
+      } catch {
+        // recovery package invalid or SERVER_RECOVERY_KEY not set
+      }
+    }
+
     return res.json({
       token,
-      user: { id: user.id, email: user.email, role: user.role },
+      user: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        encryptionSalt: encryptionSalt ?? undefined,
+        recoveryEnabled,
+        encryptionKey,
+      },
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error("Login error:", err);
+    console.error("Login error");
     return res.status(500).json({
       error: "Internal Server Error",
       detail: message,
@@ -378,12 +434,28 @@ export const me = async (req: AuthRequest, res: Response) => {
 
   const user = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, email: true, role: true, createdAt: true, forceOnboardingNextLogin: true, onboardingStep: true, mobileWarningDismissed: true, preferredDisplayCurrencyId: true },
+    select: {
+      id: true,
+      email: true,
+      role: true,
+      createdAt: true,
+      forceOnboardingNextLogin: true,
+      onboardingStep: true,
+      mobileWarningDismissed: true,
+      preferredDisplayCurrencyId: true,
+      encryptionSalt: true,
+      phone: true,
+      phoneVerifiedAt: true,
+      encryptedRecoveryPackage: true,
+    },
   });
 
   if (!user) return res.status(404).json({ error: "User not found" });
 
-  return res.json(user);
+  return res.json({
+    ...user,
+    recoveryEnabled: !!(user.encryptedRecoveryPackage && user.phoneVerifiedAt),
+  });
 };
 
 const ONBOARDING_STEPS = ["welcome", "admin", "expenses", "investments", "budget", "dashboard", "done"] as const;
@@ -428,4 +500,85 @@ export const patchMe = async (req: AuthRequest, res: Response) => {
     });
   }
   return res.status(204).end();
+};
+
+/** Normalize phone to E.164-like (digits only, optional leading +) */
+function normalizePhone(phone: string): string {
+  const digits = String(phone || "").replace(/\D/g, "");
+  if (digits.length < 10) return "";
+  return digits.startsWith("0") ? digits : digits;
+}
+
+/**
+ * POST /auth/me/phone/request
+ * Body: { phone }
+ * Sends OTP via SMS. Rate limit: 1 per 2 min per user.
+ */
+export const phoneRequest = async (req: AuthRequest, res: Response) => {
+  const userId = req.userId!;
+  const raw = String(req.body?.phone ?? "").trim();
+  const phone = normalizePhone(raw) || raw.replace(/\s/g, "");
+  if (!phone || phone.length < 10) {
+    return res.status(400).json({ error: "Valid phone number is required" });
+  }
+
+  const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000);
+  const recent = await prisma.phoneVerificationCode.findFirst({
+    where: { userId, createdAt: { gte: twoMinAgo } },
+    orderBy: { createdAt: "desc" },
+  });
+  if (recent) {
+    return res.status(200).json({ ok: true, alreadySent: true });
+  }
+
+  const code = gen6();
+  const codeHash = hashPhoneCode(userId, phone, code);
+  const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+  await prisma.phoneVerificationCode.create({
+    data: { userId, phone, codeHash, expiresAt },
+  });
+
+  sendSms(phone, `Your Ground verification code is: ${code}. It expires in 15 minutes.`).catch((err) => {
+    console.error("sendSms error");
+  });
+
+  return res.status(200).json({ ok: true });
+};
+
+/**
+ * POST /auth/me/phone/verify
+ * Body: { code }
+ * Verifies OTP and sets User.phone + User.phoneVerifiedAt.
+ */
+export const phoneVerify = async (req: AuthRequest, res: Response) => {
+  const userId = req.userId!;
+  const code = String(req.body?.code ?? "").trim();
+  if (!code) return res.status(400).json({ error: "code is required" });
+
+  const now = new Date();
+  const latest = await prisma.phoneVerificationCode.findFirst({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!latest || latest.usedAt || latest.expiresAt <= now) {
+    return res.status(400).json({ error: "Invalid or expired code" });
+  }
+
+  const expectedHash = hashPhoneCode(userId, latest.phone, code);
+  const a = Buffer.from(expectedHash);
+  const b = Buffer.from(latest.codeHash);
+  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+  if (!ok) return res.status(400).json({ error: "Invalid or expired code" });
+
+  await prisma.phoneVerificationCode.update({
+    where: { id: latest.id },
+    data: { usedAt: now },
+  });
+  await prisma.user.update({
+    where: { id: userId },
+    data: { phone: latest.phone, phoneVerifiedAt: now },
+  });
+
+  return res.status(200).json({ ok: true });
 };

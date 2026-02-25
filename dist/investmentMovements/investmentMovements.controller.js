@@ -10,7 +10,9 @@ function parseBody(body) {
     const investmentId = String(body.investmentId ?? "");
     const type = String(body.type ?? "");
     const currencyId = String(body.currencyId ?? "");
-    const amount = Number(body.amount);
+    const encryptedPayload = typeof body.encryptedPayload === "string" && body.encryptedPayload.length > 0 ? body.encryptedPayload : null;
+    const hasEncrypted = !!encryptedPayload;
+    const amount = hasEncrypted ? 0 : Number(body.amount);
     const date = String(body.date ?? "");
     if (!investmentId)
         return null;
@@ -18,12 +20,12 @@ function parseBody(body) {
         return null;
     if (!currencyId)
         return null;
-    if (!Number.isFinite(amount) || amount < 0)
+    if (!hasEncrypted && (!Number.isFinite(amount) || amount < 0))
         return null;
     const d = new Date(date);
     if (Number.isNaN(d.getTime()))
         return null;
-    return { investmentId, type, currencyId, amount, date: d };
+    return { investmentId, type, currencyId, amount, date: d, encryptedPayload };
 }
 const listInvestmentMovements = async (req, res) => {
     const userId = req.userId;
@@ -68,6 +70,7 @@ const createInvestmentMovement = async (req, res) => {
             type: parsed.type,
             currencyId: parsed.currencyId,
             amount: parsed.amount,
+            encryptedPayload: parsed.encryptedPayload ?? undefined,
         },
         include: {
             investment: { select: { id: true, name: true, type: true } },
@@ -110,6 +113,7 @@ const updateInvestmentMovement = async (req, res) => {
             type: parsed.type,
             currencyId: parsed.currencyId,
             amount: parsed.amount,
+            encryptedPayload: parsed.encryptedPayload ?? undefined,
         },
         include: {
             investment: { select: { id: true, name: true, type: true } },

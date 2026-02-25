@@ -1,7 +1,14 @@
 // src/plannedExpenses/plannedExpenses.controller.ts
+import { randomUUID } from "crypto";
 import { Response } from "express";
 import { prisma } from "../lib/prisma";
 import type { AuthRequest } from "../middlewares/requireAuth";
+
+const ENCRYPTED_PLACEHOLDER_PREFIX = "(encrypted-";
+const ENCRYPTED_PLACEHOLDER_SUFFIX = ")";
+function encryptedPlaceholder() {
+  return ENCRYPTED_PLACEHOLDER_PREFIX + randomUUID().slice(0, 8) + ENCRYPTED_PLACEHOLDER_SUFFIX;
+}
 
 /* =========================================================
    Helpers
@@ -68,6 +75,7 @@ async function ensurePlannedForYear(userId: string, year: number) {
       categoryId: true,
       description: true,
       defaultAmountUsd: true,
+      encryptedPayload: true,
     },
   });
 
@@ -99,6 +107,7 @@ async function ensurePlannedForYear(userId: string, year: number) {
             description: t.description,
             amountUsd: t.defaultAmountUsd,
             isConfirmed: false,
+            ...(t.encryptedPayload ? { encryptedPayload: t.encryptedPayload } : {}),
           },
         })
       )
@@ -113,20 +122,28 @@ async function ensurePlannedForYear(userId: string, year: number) {
 ========================================================= */
 
 /**
- * GET /plannedExpenses?year=YYYY&month=M
+ * GET /plannedExpenses?year=YYYY&month=M  — list for one month (for Gastos page).
+ * GET /plannedExpenses?year=YYYY         — list all rows for the year (for projection; client decrypts amountUsd).
  */
 export const listPlannedExpenses = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
-  const ym = parseYearMonth(req.query);
-  if (!ym) {
+  const year = parseYear(req.query);
+  const monthQ = req.query.month;
+  const month = monthQ != null && monthQ !== "" ? Number(monthQ) : null;
+
+  if (!year) {
     return res
       .status(400)
-      .json({ error: "Provide year and month query params (?year=2026&month=1)" });
+      .json({ error: "Provide year query param (?year=2026). Optionally month=1..12 for single month." });
   }
 
+  const whereMonth = month != null && Number.isInteger(month) && month >= 1 && month <= 12
+    ? { month }
+    : {};
+
   const rows = await prisma.plannedExpense.findMany({
-    where: { userId, year: ym.year, month: ym.month },
-    orderBy: [{ expenseType: "asc" }, { categoryId: "asc" }, { description: "asc" }],
+    where: { userId, year, ...whereMonth },
+    orderBy: [{ month: "asc" }, { expenseType: "asc" }, { categoryId: "asc" }, { description: "asc" }],
     include: {
       category: true,
       template: { select: { defaultCurrencyId: true } },
@@ -147,7 +164,11 @@ export const listPlannedExpenses = async (req: AuthRequest, res: Response) => {
 
   const filtered = rows.filter((r) => !r.templateId || !hiddenTemplateIds.has(r.templateId!));
 
-  res.json({ year: ym.year, month: ym.month, rows: filtered });
+  if (month != null) {
+    res.json({ year, month, rows: filtered });
+  } else {
+    res.json({ year, rows: filtered });
+  }
 };
 
 /**
@@ -164,19 +185,30 @@ export const updatePlannedExpense = async (req: AuthRequest, res: Response) => {
     include: { template: { select: { defaultCurrencyId: true } } },
   });
   if (!pe) return res.status(404).json({ error: "PlannedExpense not found" });
-  if (pe.isConfirmed) {
+
+  const patch: any = {};
+  const hasEncrypted = typeof req.body?.encryptedPayload === "string" && req.body.encryptedPayload.length > 0;
+
+  if (!hasEncrypted && pe.isConfirmed) {
     return res.status(409).json({ error: "PlannedExpense is confirmed and cannot be edited" });
   }
 
-  const close = await prisma.monthClose.findFirst({
-    where: { userId, year: pe.year, month: pe.month },
-    select: { id: true },
-  });
-  if (close) {
-    return res.status(409).json({ error: "Month is closed. Planned expenses cannot be edited." });
+  if (!hasEncrypted) {
+    const close = await prisma.monthClose.findFirst({
+      where: { userId, year: pe.year, month: pe.month },
+      select: { id: true },
+    });
+    if (close) {
+      return res.status(409).json({ error: "Month is closed. Planned expenses cannot be edited." });
+    }
   }
 
-  const patch: any = {};
+  if (hasEncrypted) {
+    patch.encryptedPayload = req.body.encryptedPayload;
+    patch.description = encryptedPlaceholder();
+    patch.amountUsd = 0;
+    patch.amount = 0;
+  } else {
   const isUyu = pe.template?.defaultCurrencyId === "UYU";
 
   if (req.body?.amountUsd !== undefined) {
@@ -200,6 +232,7 @@ export const updatePlannedExpense = async (req: AuthRequest, res: Response) => {
     const d = String(req.body.description ?? "").trim();
     if (!d) return res.status(400).json({ error: "description is required" });
     patch.description = d;
+  }
   }
 
   if (req.body?.categoryId != null) {

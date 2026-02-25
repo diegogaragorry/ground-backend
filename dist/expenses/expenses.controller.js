@@ -38,13 +38,21 @@ function normalizeToMonthStartUTC(dateStr) {
 }
 const createExpense = async (req, res) => {
     const userId = req.userId;
-    const { description, amount, date, categoryId, currencyId, usdUyuRate, expenseType: bodyExpenseType } = req.body ?? {};
-    if (!description || typeof description !== "string") {
+    const { description, amount, date, categoryId, currencyId, usdUyuRate, expenseType: bodyExpenseType, encryptedPayload } = req.body ?? {};
+    const hasEncrypted = typeof encryptedPayload === "string" && encryptedPayload.length > 0;
+    const desc = hasEncrypted ? (description ?? "") : description;
+    const descStr = typeof desc === "string" ? desc : "";
+    if (!hasEncrypted && !descStr.trim()) {
         return res.status(400).json({ error: "description is required" });
     }
-    if (typeof amount !== "number" || !Number.isFinite(amount) || amount === 0) {
+    // When E2EE: client sends amount 0 and real value is in encryptedPayload
+    if (typeof amount !== "number" || !Number.isFinite(amount)) {
+        return res.status(400).json({ error: "amount must be a number" });
+    }
+    if (!hasEncrypted && amount === 0) {
         return res.status(400).json({ error: "amount must be a non-zero number" });
     }
+    const amt = hasEncrypted ? 0 : amount;
     const monthDate = normalizeToMonthStartUTC(date);
     if (!monthDate) {
         return res.status(400).json({ error: "date must be YYYY-MM or an ISO date string" });
@@ -65,13 +73,18 @@ const createExpense = async (req, res) => {
     const currency = await prisma_1.prisma.currency.findUnique({ where: { id: currencyId } });
     if (!currency)
         return res.status(400).json({ error: "Invalid currencyId" });
-    // FX
+    // FX: when E2EE we store 0; client sends amountUsd in payload or we use 0
     let fx;
-    try {
-        fx = (0, fx_1.toUsd)({ amount, currencyId, usdUyuRate });
+    if (hasEncrypted) {
+        fx = { amountUsd: 0, usdUyuRate: typeof usdUyuRate === "number" && usdUyuRate > 0 ? usdUyuRate : null };
     }
-    catch (e) {
-        return res.status(400).json({ error: e?.message ?? "Invalid FX rate" });
+    else {
+        try {
+            fx = (0, fx_1.toUsd)({ amount: amt, currencyId, usdUyuRate });
+        }
+        catch (e) {
+            return res.status(400).json({ error: e?.message ?? "Invalid FX rate" });
+        }
     }
     const expenseType = bodyExpenseType === "FIXED" || bodyExpenseType === "VARIABLE"
         ? bodyExpenseType
@@ -81,12 +94,13 @@ const createExpense = async (req, res) => {
             userId,
             categoryId,
             currencyId,
-            description,
-            amount,
+            description: descStr.trim() || "(encrypted)",
+            amount: amt,
             amountUsd: fx.amountUsd,
             usdUyuRate: fx.usdUyuRate,
             date: monthDate,
             expenseType,
+            encryptedPayload: hasEncrypted ? encryptedPayload : undefined,
         },
         include: { category: true, currency: true },
     });
@@ -155,19 +169,27 @@ const updateExpense = async (req, res) => {
     const existing = await prisma_1.prisma.expense.findFirst({ where: { id, userId } });
     if (!existing)
         return res.status(404).json({ error: "Expense not found" });
-    const { description, amount, date, categoryId, currencyId, usdUyuRate } = req.body ?? {};
+    const { description, amount, date, categoryId, currencyId, usdUyuRate, encryptedPayload } = req.body ?? {};
     const data = {};
+    const hasEncryptedPayload = typeof encryptedPayload === "string" && encryptedPayload.length > 0;
     if (description !== undefined) {
-        if (typeof description !== "string" || !description.trim()) {
+        if (typeof description !== "string") {
+            return res.status(400).json({ error: "description must be a string" });
+        }
+        const trimmed = description.trim();
+        if (!hasEncryptedPayload && !trimmed) {
             return res.status(400).json({ error: "description must be a non-empty string" });
         }
-        data.description = description.trim();
+        data.description = trimmed || "(encrypted)";
     }
     if (amount !== undefined) {
-        if (typeof amount !== "number" || !Number.isFinite(amount) || amount === 0) {
+        if (typeof amount !== "number" || !Number.isFinite(amount)) {
+            return res.status(400).json({ error: "amount must be a number" });
+        }
+        if (!hasEncryptedPayload && amount === 0) {
             return res.status(400).json({ error: "amount must be a non-zero number" });
         }
-        data.amount = amount;
+        data.amount = hasEncryptedPayload ? 0 : amount;
     }
     if (date !== undefined) {
         const monthDate = normalizeToMonthStartUTC(date);
@@ -200,9 +222,18 @@ const updateExpense = async (req, res) => {
         }
         data.usdUyuRate = usdUyuRate;
     }
-    // Recalcular amountUsd si cambia amount o currency o usdUyuRate
-    if (amount !== undefined || currencyId !== undefined || usdUyuRate !== undefined) {
-        const finalAmount = amount !== undefined ? amount : existing.amount;
+    if (encryptedPayload !== undefined) {
+        data.encryptedPayload = typeof encryptedPayload === "string" ? (encryptedPayload || null) : null;
+    }
+    // Recalcular amountUsd si cambia amount o currency o usdUyuRate (no cuando viene encryptedPayload con amount 0)
+    const updatingWithEncrypted = hasEncryptedPayload && amount !== undefined && amount === 0;
+    if (updatingWithEncrypted) {
+        data.amountUsd = 0;
+        if (usdUyuRate !== undefined)
+            data.usdUyuRate = usdUyuRate;
+    }
+    else if (amount !== undefined || currencyId !== undefined || usdUyuRate !== undefined) {
+        const finalAmount = amount !== undefined ? (hasEncryptedPayload ? 0 : amount) : existing.amount;
         const finalCurrencyId = currencyId !== undefined ? currencyId : existing.currencyId;
         const finalUsdUyuRate = usdUyuRate !== undefined
             ? usdUyuRate

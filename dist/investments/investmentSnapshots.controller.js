@@ -32,6 +32,7 @@ const listSnapshotsByYear = async (req, res) => {
     const snaps = await prisma_1.prisma.investmentSnapshot.findMany({
         where: { investmentId, year },
         orderBy: { month: "asc" },
+        select: { id: true, investmentId: true, year: true, month: true, capital: true, capitalUsd: true, encryptedPayload: true, isClosed: true, createdAt: true, updatedAt: true },
     });
     const map = new Map(snaps.map((s) => [s.month, s]));
     const months = Array.from({ length: 12 }, (_, i) => i + 1).map((m) => {
@@ -44,6 +45,7 @@ const listSnapshotsByYear = async (req, res) => {
                 month: s.month,
                 closingCapital: s.capital ?? null,
                 closingCapitalUsd: s.capitalUsd ?? null,
+                encryptedPayload: s.encryptedPayload ?? undefined,
                 isClosed: s.isClosed,
                 createdAt: s.createdAt,
                 updatedAt: s.updatedAt ?? null,
@@ -55,6 +57,7 @@ const listSnapshotsByYear = async (req, res) => {
                 month: m,
                 closingCapital: null,
                 closingCapitalUsd: null,
+                encryptedPayload: undefined,
                 isClosed: false,
                 createdAt: null,
                 updatedAt: null,
@@ -67,62 +70,55 @@ const upsertSnapshotForMonth = async (req, res) => {
     const userId = req.userId;
     const investmentId = paramId(req.params);
     const ym = parseYearMonthParams(req.params);
-    const { closingCapital, usdUyuRate } = req.body ?? {};
+    const { closingCapital, usdUyuRate, encryptedPayload } = req.body ?? {};
     if (!ym)
         return res.status(400).json({ error: "Invalid year/month" });
-    if (typeof closingCapital !== "number" || Number.isNaN(closingCapital) || closingCapital < 0) {
-        return res.status(400).json({ error: "closingCapital must be >= 0" });
+    const hasEncrypted = typeof encryptedPayload === "string" && encryptedPayload.length > 0;
+    let capitalToUse;
+    let capitalUsdToUse;
+    if (hasEncrypted) {
+        capitalToUse = 0;
+        capitalUsdToUse = 0;
+    }
+    else {
+        if (typeof closingCapital !== "number" || Number.isNaN(closingCapital) || closingCapital < 0) {
+            return res.status(400).json({ error: "closingCapital must be >= 0" });
+        }
+        const investment = await prisma_1.prisma.investment.findFirst({ where: { id: investmentId, userId } });
+        if (!investment)
+            return res.status(404).json({ error: "Investment not found" });
+        const existing = await prisma_1.prisma.investmentSnapshot.findUnique({
+            where: { investmentId_year_month: { investmentId, year: ym.year, month: ym.month } },
+        });
+        if (existing?.isClosed)
+            return res.status(409).json({ error: "Month is closed" });
+        const currencyId = investment.currencyId ?? "USD";
+        let fx;
+        try {
+            fx = (0, fx_1.toUsd)({ amount: closingCapital, currencyId, usdUyuRate });
+        }
+        catch (e) {
+            return res.status(400).json({ error: e?.message ?? "Invalid FX rate" });
+        }
+        const prevYear = ym.month === 1 ? ym.year - 1 : ym.year;
+        const prevMonth = ym.month === 1 ? 12 : ym.month - 1;
+        const prevSnapshot = await prisma_1.prisma.investmentSnapshot.findUnique({
+            where: { investmentId_year_month: { investmentId, year: prevYear, month: prevMonth } },
+        });
+        const useFrozenStart = !existing && prevSnapshot?.isClosed;
+        capitalToUse = useFrozenStart ? Number(prevSnapshot.capital ?? 0) : closingCapital;
+        capitalUsdToUse = useFrozenStart ? Number(prevSnapshot.capitalUsd ?? 0) : fx.amountUsd;
     }
     const investment = await prisma_1.prisma.investment.findFirst({ where: { id: investmentId, userId } });
     if (!investment)
         return res.status(404).json({ error: "Investment not found" });
     const existing = await prisma_1.prisma.investmentSnapshot.findUnique({
-        where: {
-            investmentId_year_month: {
-                investmentId,
-                year: ym.year,
-                month: ym.month,
-            },
-        },
+        where: { investmentId_year_month: { investmentId, year: ym.year, month: ym.month } },
     });
-    if (existing?.isClosed) {
+    if (!hasEncrypted && existing?.isClosed)
         return res.status(409).json({ error: "Month is closed" });
-    }
-    const currencyId = investment.currencyId ?? "USD";
-    let fx;
-    try {
-        fx = (0, fx_1.toUsd)({
-            amount: closingCapital,
-            currencyId,
-            usdUyuRate,
-        });
-    }
-    catch (e) {
-        return res.status(400).json({ error: e?.message ?? "Invalid FX rate" });
-    }
-    // Al crear el snapshot de este mes: si el mes anterior está cerrado, el patrimonio inicial queda fijado al cierre del anterior.
-    const prevYear = ym.month === 1 ? ym.year - 1 : ym.year;
-    const prevMonth = ym.month === 1 ? 12 : ym.month - 1;
-    const prevSnapshot = await prisma_1.prisma.investmentSnapshot.findUnique({
-        where: {
-            investmentId_year_month: {
-                investmentId,
-                year: prevYear,
-                month: prevMonth,
-            },
-        },
-    });
-    const useFrozenStart = !existing && prevSnapshot?.isClosed;
-    const capitalToUse = useFrozenStart ? Number(prevSnapshot.capital ?? 0) : closingCapital;
-    const capitalUsdToUse = useFrozenStart ? Number(prevSnapshot.capitalUsd ?? 0) : fx.amountUsd;
     const snap = await prisma_1.prisma.investmentSnapshot.upsert({
-        where: {
-            investmentId_year_month: {
-                investmentId,
-                year: ym.year,
-                month: ym.month,
-            },
-        },
+        where: { investmentId_year_month: { investmentId, year: ym.year, month: ym.month } },
         create: {
             investmentId,
             year: ym.year,
@@ -130,10 +126,12 @@ const upsertSnapshotForMonth = async (req, res) => {
             capital: capitalToUse,
             capitalUsd: capitalUsdToUse,
             isClosed: false,
+            encryptedPayload: hasEncrypted ? encryptedPayload : undefined,
         },
         update: {
-            capital: closingCapital,
-            capitalUsd: fx.amountUsd,
+            capital: capitalToUse,
+            capitalUsd: capitalUsdToUse,
+            encryptedPayload: hasEncrypted ? encryptedPayload : undefined,
         },
     });
     res.json({
@@ -143,6 +141,7 @@ const upsertSnapshotForMonth = async (req, res) => {
         month: snap.month,
         closingCapital: snap.capital ?? null,
         closingCapitalUsd: snap.capitalUsd ?? null,
+        encryptedPayload: snap.encryptedPayload ?? undefined,
         isClosed: snap.isClosed,
         createdAt: snap.createdAt,
         updatedAt: snap.updatedAt ?? null,
@@ -177,6 +176,7 @@ const closeSnapshotForMonth = async (req, res) => {
             month: existing.month,
             closingCapital: existing.capital ?? null,
             closingCapitalUsd: existing.capitalUsd ?? null,
+            encryptedPayload: existing.encryptedPayload ?? undefined,
             isClosed: existing.isClosed,
             createdAt: existing.createdAt,
             updatedAt: existing.updatedAt ?? null,
@@ -193,6 +193,7 @@ const closeSnapshotForMonth = async (req, res) => {
         month: closed.month,
         closingCapital: closed.capital ?? null,
         closingCapitalUsd: closed.capitalUsd ?? null,
+        encryptedPayload: closed.encryptedPayload ?? undefined,
         isClosed: closed.isClosed,
         createdAt: closed.createdAt,
         updatedAt: closed.updatedAt ?? null,

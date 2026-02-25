@@ -10,7 +10,8 @@
     "start:migrate": "npx prisma migrate deploy && node dist/server.js",
     "migrate:deploy": "npx prisma migrate deploy",
     "seed": "ts-node prisma/seed.ts",
-    "db:local": "npx prisma migrate deploy && npm run seed"
+    "db:local": "npx prisma migrate deploy && npm run seed",
+    "sync-user-from-prod": "tsx scripts/sync-user-from-production.ts"
   },
   "keywords": [],
   "author": "",

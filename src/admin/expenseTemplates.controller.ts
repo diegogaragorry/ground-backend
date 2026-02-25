@@ -1,8 +1,15 @@
 // src/admin/expenseTemplates.controller.ts
+import { randomUUID } from "crypto";
 import { Response } from "express";
 import { prisma } from "../lib/prisma";
 import type { AuthRequest } from "../middlewares/requireAuth";
 import { toUsd } from "../utils/fx";
+
+const ENCRYPTED_PLACEHOLDER_PREFIX = "(encrypted-";
+const ENCRYPTED_PLACEHOLDER_SUFFIX = ")";
+function encryptedPlaceholder() {
+  return ENCRYPTED_PLACEHOLDER_PREFIX + randomUUID().slice(0, 8) + ENCRYPTED_PLACEHOLDER_SUFFIX;
+}
 
 function parseAmountUsd(v: any) {
   if (v == null || v === "") return null;
@@ -26,10 +33,9 @@ export async function openMonthsForYear(userId: string, year: number) {
   return out;
 }
 
-export async function ensurePlannedForTemplate(userId: string, year: number, template: { id: string; expenseType: any; categoryId: string; description: string; defaultAmountUsd: number | null }) {
+export async function ensurePlannedForTemplate(userId: string, year: number, template: { id: string; expenseType: any; categoryId: string; description: string; defaultAmountUsd: number | null; encryptedPayload?: string | null }) {
   const monthsOpen = await openMonthsForYear(userId, year);
 
-  // crea los que faltan (no pisa ediciones manuales)
   await prisma.$transaction(
     monthsOpen.map((m) =>
       prisma.plannedExpense.upsert({
@@ -52,13 +58,14 @@ export async function ensurePlannedForTemplate(userId: string, year: number, tem
           description: template.description,
           amountUsd: template.defaultAmountUsd,
           isConfirmed: false,
+          ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
         },
       })
     )
   );
 }
 
-async function syncPlannedAfterTemplateUpdate(userId: string, year: number, template: { id: string; expenseType: any; categoryId: string; description: string; defaultAmountUsd: number | null }) {
+async function syncPlannedAfterTemplateUpdate(userId: string, year: number, template: { id: string; expenseType: any; categoryId: string; description: string; defaultAmountUsd: number | null; encryptedPayload?: string | null }) {
   const monthsOpen = await openMonthsForYear(userId, year);
 
   // a) crear los que falten
@@ -78,6 +85,7 @@ async function syncPlannedAfterTemplateUpdate(userId: string, year: number, temp
       categoryId: template.categoryId,
       description: template.description,
       amountUsd: template.defaultAmountUsd,
+      ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
     },
   });
 }
@@ -124,19 +132,30 @@ function parseTemplateAmount(
 export const createExpenseTemplate = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
   const categoryId = String(req.body?.categoryId ?? "");
-  const description = String(req.body?.description ?? "").trim();
+  const encryptedPayload = typeof req.body?.encryptedPayload === "string" && req.body.encryptedPayload.length > 0 ? req.body.encryptedPayload : null;
+  const hasEncrypted = !!encryptedPayload;
+
+  let description: string;
   let defaultAmountUsd: number | null;
   let defaultCurrencyId: string;
-  try {
-    const parsed = parseTemplateAmount(req.body);
-    defaultAmountUsd = parsed.defaultAmountUsd;
-    defaultCurrencyId = parsed.defaultCurrencyId;
-  } catch (e: any) {
-    return res.status(400).json({ error: e?.message ?? "Invalid amount/currency" });
+
+  if (hasEncrypted) {
+    description = encryptedPlaceholder();
+    defaultAmountUsd = 0;
+    defaultCurrencyId = String(req.body?.defaultCurrencyId ?? "USD").toUpperCase() || "USD";
+  } else {
+    description = String(req.body?.description ?? "").trim();
+    if (!description) return res.status(400).json({ error: "description is required" });
+    try {
+      const parsed = parseTemplateAmount(req.body);
+      defaultAmountUsd = parsed.defaultAmountUsd;
+      defaultCurrencyId = parsed.defaultCurrencyId;
+    } catch (e: any) {
+      return res.status(400).json({ error: e?.message ?? "Invalid amount/currency" });
+    }
   }
 
   if (!categoryId) return res.status(400).json({ error: "categoryId is required" });
-  if (!description) return res.status(400).json({ error: "description is required" });
 
   // category debe ser del user (y de ahí viene el type)
   const cat = await prisma.category.findFirst({
@@ -151,11 +170,12 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
     const created = await prisma.expenseTemplate.create({
       data: {
         userId,
-        expenseType: cat.expenseType, // ✅ Option A: from category
+        expenseType: cat.expenseType,
         categoryId,
         description,
         defaultAmountUsd,
         defaultCurrencyId: defaultCurrencyId || "USD",
+        ...(hasEncrypted ? { encryptedPayload } : {}),
       },
       include: { category: true },
     });
@@ -167,6 +187,7 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
       categoryId: created.categoryId,
       description: created.description,
       defaultAmountUsd: created.defaultAmountUsd ?? null,
+      encryptedPayload: created.encryptedPayload ?? undefined,
     });
 
     res.status(201).json(created);
@@ -185,6 +206,7 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
           categoryId: existing.categoryId,
           description: existing.description,
           defaultAmountUsd: defaultAmountUsd ?? existing.defaultAmountUsd ?? null,
+          encryptedPayload: existing.encryptedPayload ?? undefined,
         };
         if (defaultAmountUsd !== undefined && defaultAmountUsd !== null || defaultCurrencyId) {
           await prisma.expenseTemplate.update({
@@ -222,6 +244,13 @@ export const updateExpenseTemplate = async (req: AuthRequest, res: Response) => 
   if (!existing) return res.status(404).json({ error: "Template not found" });
 
   const patch: any = {};
+  const hasEncrypted = typeof req.body?.encryptedPayload === "string" && req.body.encryptedPayload.length > 0;
+
+  if (hasEncrypted) {
+    patch.encryptedPayload = req.body.encryptedPayload;
+    patch.description = encryptedPlaceholder();
+    patch.defaultAmountUsd = 0;
+  }
 
   // categoryId (and type derived from it)
   if (req.body?.categoryId != null) {
@@ -235,39 +264,40 @@ export const updateExpenseTemplate = async (req: AuthRequest, res: Response) => 
     if (!cat) return res.status(403).json({ error: "Invalid categoryId for this user" });
 
     patch.categoryId = categoryId;
-    patch.expenseType = cat.expenseType; // ✅ keep in sync with category
+    patch.expenseType = cat.expenseType;
   }
 
-  // description
-  if (req.body?.description != null) {
-    const d = String(req.body.description ?? "").trim();
-    if (!d) return res.status(400).json({ error: "description is required" });
-    patch.description = d;
-  }
-
-  // defaultAmountUsd / defaultCurrencyId: por monto en USD o por (monto, moneda, tipo de cambio)
-  if (
-    req.body?.defaultAmountUsd !== undefined ||
-    req.body?.defaultAmount !== undefined ||
-    (req.body?.defaultCurrencyId !== undefined && req.body?.defaultAmount !== undefined)
-  ) {
-    try {
-      const parsed = parseTemplateAmount({
-        defaultAmountUsd: req.body?.defaultAmountUsd,
-        defaultAmount: req.body?.defaultAmount,
-        defaultCurrencyId: req.body?.defaultCurrencyId ?? (existing as any).defaultCurrencyId ?? "USD",
-        usdUyuRate: req.body?.usdUyuRate,
-      });
-      patch.defaultAmountUsd = parsed.defaultAmountUsd;
-      patch.defaultCurrencyId = parsed.defaultCurrencyId;
-    } catch (e: any) {
-      return res.status(400).json({ error: e?.message ?? "Invalid amount/currency" });
+  if (!hasEncrypted) {
+    // description
+    if (req.body?.description != null) {
+      const d = String(req.body.description ?? "").trim();
+      if (!d) return res.status(400).json({ error: "description is required" });
+      patch.description = d;
     }
-  } else if (req.body?.defaultCurrencyId !== undefined) {
-    patch.defaultCurrencyId = String(req.body.defaultCurrencyId || "USD").toUpperCase();
+
+    // defaultAmountUsd / defaultCurrencyId
+    if (
+      req.body?.defaultAmountUsd !== undefined ||
+      req.body?.defaultAmount !== undefined ||
+      (req.body?.defaultCurrencyId !== undefined && req.body?.defaultAmount !== undefined)
+    ) {
+      try {
+        const parsed = parseTemplateAmount({
+          defaultAmountUsd: req.body?.defaultAmountUsd,
+          defaultAmount: req.body?.defaultAmount,
+          defaultCurrencyId: req.body?.defaultCurrencyId ?? (existing as any).defaultCurrencyId ?? "USD",
+          usdUyuRate: req.body?.usdUyuRate,
+        });
+        patch.defaultAmountUsd = parsed.defaultAmountUsd;
+        patch.defaultCurrencyId = parsed.defaultCurrencyId;
+      } catch (e: any) {
+        return res.status(400).json({ error: e?.message ?? "Invalid amount/currency" });
+      }
+    } else if (req.body?.defaultCurrencyId !== undefined) {
+      patch.defaultCurrencyId = String(req.body.defaultCurrencyId || "USD").toUpperCase();
+    }
   }
 
-  // showInExpenses: si true, la plantilla se muestra en Gastos (genera borradores)
   if (req.body?.showInExpenses !== undefined) {
     patch.showInExpenses = Boolean(req.body.showInExpenses);
   }
@@ -289,6 +319,7 @@ export const updateExpenseTemplate = async (req: AuthRequest, res: Response) => 
       categoryId: updated.categoryId,
       description: updated.description,
       defaultAmountUsd: updated.defaultAmountUsd ?? null,
+      encryptedPayload: updated.encryptedPayload ?? undefined,
     });
     }
     // Si showInExpenses pasó a false, no borramos planned existentes (quedan ocultos por filtro en list)

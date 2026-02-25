@@ -164,6 +164,21 @@ const deleteInvestment = async (req, res) => {
     const investment = await prisma_1.prisma.investment.findFirst({ where: { id, userId } });
     if (!investment)
         return res.status(404).json({ error: "Investment not found" });
+    const closedWithAmount = await prisma_1.prisma.investmentSnapshot.findFirst({
+        where: {
+            investmentId: id,
+            isClosed: true,
+            OR: [
+                { capital: { not: 0 } },
+                { capitalUsd: { not: 0 } },
+            ],
+        },
+    });
+    if (closedWithAmount) {
+        return res.status(409).json({
+            error: "Cannot delete: this investment has amounts in closed months. Reopen those months in Admin, move the funds elsewhere, then try deleting again.",
+        });
+    }
     await prisma_1.prisma.$transaction(async (tx) => {
         await tx.investmentMovement.deleteMany({ where: { investmentId: id } });
         await tx.investmentSnapshot.deleteMany({ where: { investmentId: id } });

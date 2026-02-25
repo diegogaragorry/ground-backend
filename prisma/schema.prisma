@@ -31,6 +31,12 @@ model User {
   mobileWarningDismissed        Boolean  @default(false)
   preferredDisplayCurrencyId   String?  // "USD" | "UYU" — moneda para mostrar totales/resúmenes
 
+  // E2EE + account recovery (phone + email)
+  encryptionSalt              String?   // base64, unique per user; sent to client on login/me
+  phone                       String?   // E.164 or normalized; required for recovery
+  phoneVerifiedAt             DateTime?
+  encryptedRecoveryPackage    String?   // base64( IV || AES-GCM( K ) ); only if E2EE + recovery enabled
+
   expenses     Expense[]
   categories   Category[]
   budgets      Budget[]
@@ -44,6 +50,9 @@ model User {
   expenseTemplates ExpenseTemplate[]
   plannedExpenses  PlannedExpense[]
   monthlyBudgets   MonthlyBudget[]
+
+  phoneVerificationCodes PhoneVerificationCode[]
+  recoverySessions       RecoverySession[]
 }
 
 model LoginLog {
@@ -105,6 +114,9 @@ model Expense {
   currencyId  String
   createdAt   DateTime @default(now())
 
+  // E2EE: client encrypts sensitive fields (e.g. description); server stores opaque blob
+  encryptedPayload String? @db.Text
+
   // ✅ frozen type at creation time
   expenseType ExpenseType @default(VARIABLE)
 
@@ -128,6 +140,8 @@ model Budget {
   userId     String
   categoryId String
   currencyId String
+
+  encryptedPayload String? @db.Text // E2EE: client encrypts amount
 
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
@@ -164,6 +178,8 @@ model InvestmentMovement {
   type         String
   currencyId   String
 
+  encryptedPayload String? @db.Text // E2EE: client encrypts amount
+
   investment Investment @relation(fields: [investmentId], references: [id], onDelete: Cascade)
   currency   Currency   @relation(fields: [currencyId], references: [id])
 }
@@ -179,6 +195,8 @@ model InvestmentSnapshot {
 
   capital    Float?
   capitalUsd Float?
+
+  encryptedPayload String? @db.Text // E2EE: client encrypts capital/capitalUsd
 
   isClosed Boolean @default(false)
 
@@ -222,6 +240,8 @@ model Income {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  encryptedPayload String? @db.Text // E2EE: client encrypts amounts
+
   user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   currencyId String?
   currency   Currency? @relation(fields: [currencyId], references: [id], onDelete: SetNull)
@@ -258,6 +278,10 @@ model MonthClose {
   netWorthStartUsd      Float
   netWorthEndUsd        Float?  // patrimonio inicio mes siguiente (para balance real)
 
+  // E2EE: client sends encrypted snapshot (totals computed client-side); server stores blob and 0 in numerics
+  encryptedPayload String? @db.Text
+
+  isClosed Boolean @default(true) // false = month was reopened; snapshot kept for display
   closedAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -279,6 +303,9 @@ model ExpenseTemplate {
   defaultCurrencyId   String?  @default("USD")  // moneda en que el usuario ingresa el monto (UYU | USD)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
+
+  // E2EE: client encrypts defaultAmountUsd + description; server stores blob and 0/placeholder
+  encryptedPayload String? @db.Text
 
   // Optional i18n key for default template descriptions (frontend uses t('templateDescriptions.'+descriptionKey))
   descriptionKey String?
@@ -313,6 +340,9 @@ model PlannedExpense {
   usdUyuRate  Float?  // FX rate when amount was set
   isConfirmed Boolean @default(false)
 
+  // E2EE: client encrypts amountUsd, amount, description; server stores blob and 0/placeholder
+  encryptedPayload String? @db.Text
+
   // Back relation to created real expense (after confirm)
   expense     Expense?
 
@@ -333,6 +363,9 @@ model MonthlyBudget {
   month            Int
   otherExpensesUsd Float   @default(0)
 
+  // E2EE: client encrypts otherExpensesUsd; server stores blob and 0 when encrypted
+  encryptedPayload String? @db.Text
+
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
@@ -341,6 +374,50 @@ model MonthlyBudget {
   @@unique([userId, year, month], name: "userId_year_month")
   @@index([year, month])
 }
+
+model PhoneVerificationCode {
+  id        String   @id @default(uuid())
+  userId    String
+  phone    String
+  codeHash  String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  usedAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model RecoverySession {
+  id              String    @id @default(uuid())
+  userId          String
+  emailCodeHash   String
+  phoneCodeHash   String
+  expiresAt       DateTime
+  usedAt          DateTime?
+  createdAt       DateTime  @default(now())
+  ip              String?
+  userAgent       String?   @db.VarChar(500)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model RecoveryToken {
+  id        String    @id @default(uuid())
+  userId    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
 model EmailVerificationCode {
   id        String   @id @default(uuid())
   email     String

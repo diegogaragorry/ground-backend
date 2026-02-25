@@ -268,6 +268,7 @@ export const previewMonthClose = async (req: AuthRequest, res: Response) => {
       ? "El balance real y el calculado coinciden. No se ajustará Otros gastos."
       : `Balance real: ${realBalanceUsd.toFixed(2)} USD. Balance calculado (presupuesto): ${budgetBalanceUsd.toFixed(2)} USD. Se ajustará "Otros gastos" de ${otherExpensesCurrent.toFixed(2)} a ${otherExpensesProposed.toFixed(2)} USD para que cierre. ¿Confirmar cierre?`;
 
+  const expensesUsd = baseExpensesUsd + otherExpensesCurrent;
   res.json({
     realBalanceUsd,
     budgetBalanceUsd,
@@ -275,6 +276,10 @@ export const previewMonthClose = async (req: AuthRequest, res: Response) => {
     otherExpensesProposed,
     netWorthStartUsd,
     netWorthEndUsd,
+    incomeUsd,
+    baseExpensesUsd,
+    expensesUsd,
+    investmentEarningsUsd,
     message,
   });
 };
@@ -292,9 +297,25 @@ export const listMonthCloses = async (req: AuthRequest, res: Response) => {
   res.json({ year, rows });
 };
 
+/** PATCH /monthCloses/:id - E2EE key rotation: update only encryptedPayload. */
+export const patchMonthCloseEncryptedPayload = async (req: AuthRequest, res: Response) => {
+  const userId = req.userId!;
+  const id = String(req.params.id ?? "");
+  const encryptedPayload = typeof (req.body as any)?.encryptedPayload === "string" ? (req.body as any).encryptedPayload : null;
+  if (!id) return res.status(400).json({ error: "id required" });
+  const row = await prisma.monthClose.findFirst({ where: { id, userId }, select: { id: true } });
+  if (!row) return res.status(404).json({ error: "Month close not found" });
+  await prisma.monthClose.update({
+    where: { id },
+    data: { encryptedPayload: encryptedPayload ?? undefined },
+  });
+  const updated = await prisma.monthClose.findUnique({ where: { id } });
+  return res.json(updated);
+};
+
 // Cierra un mes: guarda snapshot del budget para ese mes.
-// Siempre congela los snapshots de Portfolios/Cuentas del mes que se cierra (valor de cierre = valor de comienzo del mes siguiente).
-// En localhost (o ENABLE_REAL_BALANCE_CLOSE): además ajusta Otros gastos al balance real.
+// E2EE: si body.encryptedPayload está presente, el cliente envía snapshot cifrado; guardamos blob y 0 en numéricos.
+// Si no, calculamos en servidor como siempre.
 export const closeMonth = async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId!;
@@ -302,6 +323,55 @@ export const closeMonth = async (req: AuthRequest, res: Response) => {
     if (!parsed) return res.status(400).json({ error: "year and month (1-12) are required" });
 
     const { year, month } = parsed;
+    const encryptedPayload = typeof (req.body as any)?.encryptedPayload === "string" && (req.body as any).encryptedPayload.length > 0
+      ? (req.body as any).encryptedPayload
+      : null;
+
+    if (encryptedPayload) {
+      // E2EE: client sent encrypted snapshot; only freeze snapshots and store blob with 0 in numerics
+      const investmentIds = await prisma.investment.findMany({
+        where: { userId },
+        select: { id: true },
+      });
+      if (investmentIds.length > 0) {
+        await prisma.investmentSnapshot.updateMany({
+          where: {
+            investmentId: { in: investmentIds.map((i) => i.id) },
+            year,
+            month,
+          },
+          data: { isClosed: true },
+        });
+      }
+      const row = await prisma.monthClose.upsert({
+        where: { userId_year_month: { userId, year, month } },
+        update: {
+          incomeUsd: 0,
+          expensesUsd: 0,
+          investmentEarningsUsd: 0,
+          balanceUsd: 0,
+          netWorthStartUsd: 0,
+          netWorthEndUsd: null,
+          encryptedPayload,
+          isClosed: true,
+          closedAt: new Date(),
+        },
+        create: {
+          userId,
+          year,
+          month,
+          incomeUsd: 0,
+          expensesUsd: 0,
+          investmentEarningsUsd: 0,
+          balanceUsd: 0,
+          netWorthStartUsd: 0,
+          netWorthEndUsd: null,
+          encryptedPayload,
+          isClosed: true,
+        },
+      });
+      return res.status(201).json(row);
+    }
 
     const income = await prisma.income.findUnique({
     where: { userId_year_month: { userId, year, month } },
@@ -400,6 +470,7 @@ export const closeMonth = async (req: AuthRequest, res: Response) => {
       balanceUsd,
       netWorthStartUsd,
       ...(netWorthEndUsd != null && { netWorthEndUsd }),
+      isClosed: true,
       closedAt: new Date(),
     },
     create: {
@@ -412,12 +483,13 @@ export const closeMonth = async (req: AuthRequest, res: Response) => {
       balanceUsd,
       netWorthStartUsd,
       ...(netWorthEndUsd != null && { netWorthEndUsd }),
+      isClosed: true,
     },
-    });
+  });
 
   res.status(201).json(row);
   } catch (err: any) {
-    console.error("closeMonth error:", err);
+    console.error("closeMonth error");
     const message = err?.message ?? String(err);
     res.status(500).json({ error: `Error al cerrar el mes: ${message}` });
   }
@@ -430,24 +502,51 @@ export const reopenMonth = async (req: AuthRequest, res: Response) => {
 
   const { year, month } = parsed;
 
-  await prisma.monthClose.deleteMany({
-    where: { userId, year, month },
-  });
-
-  // Permitir de nuevo editar snapshots de ese mes (Portfolios y Cuentas)
-  const investmentIds = await prisma.investment.findMany({
-    where: { userId },
-    select: { id: true },
-  });
-  if (investmentIds.length > 0) {
-    await prisma.investmentSnapshot.updateMany({
-      where: {
-        investmentId: { in: investmentIds.map((i) => i.id) },
-        year,
-        month,
-      },
+  try {
+    // Marcar como reabierto sin borrar el snapshot (preserva encryptedPayload; requiere migración isClosed en la DB)
+    const updated = await prisma.monthClose.updateMany({
+      where: { userId, year, month },
       data: { isClosed: false },
     });
+    if (updated.count === 0) {
+      return res.status(404).json({ error: "No hay cierre para ese mes" });
+    }
+  } catch (err: unknown) {
+    // Si la columna isClosed no existe (prod sin migración), reabrir = borrar el cierre (comportamiento anterior)
+    const code = (err as { code?: string; meta?: { code?: string } })?.code ?? (err as { meta?: { code?: string } })?.meta?.code;
+    const msg = String((err as { message?: string })?.message ?? "");
+    if (code === "P2022" || code === "P2010" || msg.includes("isClosed") || msg.includes("column")) {
+      const deleted = await prisma.monthClose.deleteMany({
+        where: { userId, year, month },
+      });
+      if (deleted.count === 0) {
+        return res.status(404).json({ error: "No hay cierre para ese mes" });
+      }
+    } else {
+      console.error("reopenMonth error:", err);
+      throw err;
+    }
+  }
+
+  // Permitir de nuevo editar snapshots de ese mes (Portfolios y Cuentas)
+  try {
+    const investmentIds = await prisma.investment.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+    if (investmentIds.length > 0) {
+      await prisma.investmentSnapshot.updateMany({
+        where: {
+          investmentId: { in: investmentIds.map((i) => i.id) },
+          year,
+          month,
+        },
+        data: { isClosed: false },
+      });
+    }
+  } catch (err: unknown) {
+    // Si falla (ej. columna isClosed en InvestmentSnapshot), igual respondemos 204; el cierre ya se reabrió
+    console.error("reopenMonth: error al actualizar snapshots:", err);
   }
 
   res.status(204).send();

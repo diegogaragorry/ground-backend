@@ -1,7 +1,14 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ensureYearPlanned = exports.confirmPlannedExpense = exports.updatePlannedExpense = exports.listPlannedExpenses = void 0;
+// src/plannedExpenses/plannedExpenses.controller.ts
+const crypto_1 = require("crypto");
 const prisma_1 = require("../lib/prisma");
+const ENCRYPTED_PLACEHOLDER_PREFIX = "(encrypted-";
+const ENCRYPTED_PLACEHOLDER_SUFFIX = ")";
+function encryptedPlaceholder() {
+    return ENCRYPTED_PLACEHOLDER_PREFIX + (0, crypto_1.randomUUID)().slice(0, 8) + ENCRYPTED_PLACEHOLDER_SUFFIX;
+}
 /* =========================================================
    Helpers
 ========================================================= */
@@ -68,6 +75,7 @@ async function ensurePlannedForYear(userId, year) {
             categoryId: true,
             description: true,
             defaultAmountUsd: true,
+            encryptedPayload: true,
         },
     });
     if (templates.length === 0)
@@ -94,6 +102,7 @@ async function ensurePlannedForYear(userId, year) {
             description: t.description,
             amountUsd: t.defaultAmountUsd,
             isConfirmed: false,
+            ...(t.encryptedPayload ? { encryptedPayload: t.encryptedPayload } : {}),
         },
     }))));
     return { attempted };
@@ -102,19 +111,25 @@ async function ensurePlannedForYear(userId, year) {
    Controllers
 ========================================================= */
 /**
- * GET /plannedExpenses?year=YYYY&month=M
+ * GET /plannedExpenses?year=YYYY&month=M  — list for one month (for Gastos page).
+ * GET /plannedExpenses?year=YYYY         — list all rows for the year (for projection; client decrypts amountUsd).
  */
 const listPlannedExpenses = async (req, res) => {
     const userId = req.userId;
-    const ym = parseYearMonth(req.query);
-    if (!ym) {
+    const year = parseYear(req.query);
+    const monthQ = req.query.month;
+    const month = monthQ != null && monthQ !== "" ? Number(monthQ) : null;
+    if (!year) {
         return res
             .status(400)
-            .json({ error: "Provide year and month query params (?year=2026&month=1)" });
+            .json({ error: "Provide year query param (?year=2026). Optionally month=1..12 for single month." });
     }
+    const whereMonth = month != null && Number.isInteger(month) && month >= 1 && month <= 12
+        ? { month }
+        : {};
     const rows = await prisma_1.prisma.plannedExpense.findMany({
-        where: { userId, year: ym.year, month: ym.month },
-        orderBy: [{ expenseType: "asc" }, { categoryId: "asc" }, { description: "asc" }],
+        where: { userId, year, ...whereMonth },
+        orderBy: [{ month: "asc" }, { expenseType: "asc" }, { categoryId: "asc" }, { description: "asc" }],
         include: {
             category: true,
             template: { select: { defaultCurrencyId: true } },
@@ -129,7 +144,12 @@ const listPlannedExpenses = async (req, res) => {
             select: { id: true },
         })).map((t) => t.id));
     const filtered = rows.filter((r) => !r.templateId || !hiddenTemplateIds.has(r.templateId));
-    res.json({ year: ym.year, month: ym.month, rows: filtered });
+    if (month != null) {
+        res.json({ year, month, rows: filtered });
+    }
+    else {
+        res.json({ year, rows: filtered });
+    }
 };
 exports.listPlannedExpenses = listPlannedExpenses;
 /**
@@ -147,39 +167,50 @@ const updatePlannedExpense = async (req, res) => {
     });
     if (!pe)
         return res.status(404).json({ error: "PlannedExpense not found" });
-    if (pe.isConfirmed) {
+    const patch = {};
+    const hasEncrypted = typeof req.body?.encryptedPayload === "string" && req.body.encryptedPayload.length > 0;
+    if (!hasEncrypted && pe.isConfirmed) {
         return res.status(409).json({ error: "PlannedExpense is confirmed and cannot be edited" });
     }
-    const close = await prisma_1.prisma.monthClose.findFirst({
-        where: { userId, year: pe.year, month: pe.month },
-        select: { id: true },
-    });
-    if (close) {
-        return res.status(409).json({ error: "Month is closed. Planned expenses cannot be edited." });
-    }
-    const patch = {};
-    const isUyu = pe.template?.defaultCurrencyId === "UYU";
-    if (req.body?.amountUsd !== undefined) {
-        patch.amountUsd = parseAmountUsd(req.body.amountUsd);
-    }
-    // UYU: lock amount + rate to avoid display drift when FX changes
-    if (isUyu) {
-        const amountVal = parseAmount(req.body?.amount);
-        const rateVal = parseUsdUyuRate(req.body?.usdUyuRate);
-        if (amountVal != null && rateVal != null) {
-            patch.amount = amountVal;
-            patch.usdUyuRate = rateVal;
-            patch.amountUsd = Math.round((amountVal / rateVal) * 100) / 100;
-        }
-        else if (amountVal != null || rateVal != null) {
-            return res.status(400).json({ error: "For UYU, provide both amount and usdUyuRate together" });
+    if (!hasEncrypted) {
+        const close = await prisma_1.prisma.monthClose.findFirst({
+            where: { userId, year: pe.year, month: pe.month },
+            select: { id: true },
+        });
+        if (close) {
+            return res.status(409).json({ error: "Month is closed. Planned expenses cannot be edited." });
         }
     }
-    if (req.body?.description != null) {
-        const d = String(req.body.description ?? "").trim();
-        if (!d)
-            return res.status(400).json({ error: "description is required" });
-        patch.description = d;
+    if (hasEncrypted) {
+        patch.encryptedPayload = req.body.encryptedPayload;
+        patch.description = encryptedPlaceholder();
+        patch.amountUsd = 0;
+        patch.amount = 0;
+    }
+    else {
+        const isUyu = pe.template?.defaultCurrencyId === "UYU";
+        if (req.body?.amountUsd !== undefined) {
+            patch.amountUsd = parseAmountUsd(req.body.amountUsd);
+        }
+        // UYU: lock amount + rate to avoid display drift when FX changes
+        if (isUyu) {
+            const amountVal = parseAmount(req.body?.amount);
+            const rateVal = parseUsdUyuRate(req.body?.usdUyuRate);
+            if (amountVal != null && rateVal != null) {
+                patch.amount = amountVal;
+                patch.usdUyuRate = rateVal;
+                patch.amountUsd = Math.round((amountVal / rateVal) * 100) / 100;
+            }
+            else if (amountVal != null || rateVal != null) {
+                return res.status(400).json({ error: "For UYU, provide both amount and usdUyuRate together" });
+            }
+        }
+        if (req.body?.description != null) {
+            const d = String(req.body.description ?? "").trim();
+            if (!d)
+                return res.status(400).json({ error: "description is required" });
+            patch.description = d;
+        }
     }
     if (req.body?.categoryId != null) {
         const categoryId = String(req.body.categoryId ?? "");
