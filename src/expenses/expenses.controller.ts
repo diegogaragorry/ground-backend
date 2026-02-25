@@ -115,6 +115,37 @@ export const createExpense = async (req: AuthRequest, res: Response) => {
   return res.status(201).json(expense);
 };
 
+function parseYear(query: any): number | null {
+  const year = Number(query.year);
+  if (!Number.isInteger(year) || year < 2000 || year > 2100) return null;
+  return year;
+}
+
+/** GET /expenses?year=YYYY - returns all expenses for the year, grouped by month (byMonth[0]=Jan, .. byMonth[11]=Dec). */
+export const listExpensesByYear = async (req: AuthRequest, res: Response) => {
+  const userId = req.userId!;
+  const year = parseYear(req.query);
+  if (year == null) {
+    return res.status(400).json({ error: "Provide ?year=YYYY" });
+  }
+  const start = new Date(Date.UTC(year, 0, 1, 0, 0, 0));
+  const end = new Date(Date.UTC(year, 12, 1, 0, 0, 0));
+  const expenses = await prisma.expense.findMany({
+    where: { userId, date: { gte: start, lt: end } },
+    orderBy: { date: "desc" },
+    include: {
+      category: { select: { id: true, name: true, nameKey: true, expenseType: true } },
+      currency: true,
+    },
+  });
+  const byMonth: typeof expenses[] = Array.from({ length: 12 }, () => []);
+  for (const e of expenses) {
+    const m = e.date.getUTCMonth();
+    if (m >= 0 && m < 12) byMonth[m].push(e);
+  }
+  res.json({ byMonth });
+};
+
 export const listExpensesByMonth = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
   const ym = parseYearMonth(req.query);
