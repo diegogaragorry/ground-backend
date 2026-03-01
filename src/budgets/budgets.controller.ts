@@ -258,7 +258,7 @@ function buildInvMonthMap(invId: string, rows: SnapRow[]) {
   return m;
 }
 
-export async function buildAnnualData(userId: string, year: number): Promise<{ year: number; months: any[] }> {
+export async function buildAnnualData(userId: string, year: number): Promise<{ year: number; months: any[]; expensesUsdByMonth?: Record<number, number> }> {
   // -------- MonthCloses (locked)
   const closes = await prisma.monthClose.findMany({
     where: { userId, year },
@@ -544,7 +544,10 @@ export async function buildAnnualData(userId: string, year: number): Promise<{ y
     prevBalance = balanceUsd;
   }
 
-  return { year, months };
+  // include the expense totals for callers that need them (pageData)
+  const expenseObj: Record<number, number> = {};
+  for (const [m, amt] of actualByMonth.entries()) expenseObj[m] = amt;
+  return { year, months, expensesUsdByMonth: expenseObj };
 }
 
 export const annualBudget = async (req: AuthRequest, res: Response) => {
@@ -566,7 +569,8 @@ export const pageData = async (req: AuthRequest, res: Response) => {
   const prevYearStart = new Date(Date.UTC(prevYear, 0, 1, 0, 0, 0));
   const prevYearEnd = new Date(Date.UTC(prevYear + 1, 0, 1, 0, 0, 0));
 
-  const [annual, incomeRows, plannedRows, expenses, investments, movementRows] = await Promise.all([
+  // buildAnnualData already scans expenses and produces base totals per month; reuse it
+  const [annual, incomeRows, plannedRows, investments, movementRows] = await Promise.all([
     buildAnnualData(userId, year),
     prisma.income.findMany({
       where: { userId, year },
@@ -577,11 +581,8 @@ export const pageData = async (req: AuthRequest, res: Response) => {
       where: { userId, year },
       select: { month: true, amountUsd: true, encryptedPayload: true },
     }),
-    prisma.expense.findMany({
-      where: { userId, date: { gte: yearStart, lt: yearEnd } },
-      orderBy: { date: "desc" },
-      include: { category: { select: { id: true, name: true, nameKey: true, expenseType: true } }, currency: true },
-    }),
+    // we only need minimal investment metadata here;
+    // snapshots are fetched in bulk below
     prisma.investment.findMany({
       where: { userId },
       select: { id: true, type: true, currencyId: true, targetAnnualReturn: true, yieldStartYear: true, yieldStartMonth: true },
@@ -606,32 +607,44 @@ export const pageData = async (req: AuthRequest, res: Response) => {
 
   const planned = { year, rows: plannedRows.map((r) => ({ month: r.month, amountUsd: r.amountUsd ?? null, encryptedPayload: r.encryptedPayload ?? undefined })) };
 
-  const byMonth: typeof expenses[] = Array.from({ length: 12 }, () => []);
-  for (const e of expenses) {
-    const m = e.date.getUTCMonth();
-    if (m >= 0 && m < 12) byMonth[m].push(e);
-  }
-  const expensesByMonth = { byMonth };
+  // Build a simple totals map for expenses by month.  buildAnnualData already computed it,
+  // but we don't expose it there; we can reconstruct from the `annual` result instead
+  // (the helper changed below). To avoid an extra query, we use `annual.expensesUsdByMonth`.
+  // `annual` is modified to contain that map in the new helper.
+  const expensesByMonth = { byMonth: Array.from({ length: 12 }, (_, i) => {
+    const amt = (annual as any).expensesUsdByMonth?.[i + 1] ?? 0;
+    // keep same shape consumed by front-end: array of objects with amountUsd
+    return amt !== 0 ? [{ amountUsd: amt }] : [];
+  }) };
 
   const portfolios = investments.filter((i) => i.type === "PORTFOLIO");
-  const snapshotsYear = await Promise.all(
-    portfolios.map((inv) =>
-      prisma.investmentSnapshot.findMany({
-        where: { investmentId: inv.id, year },
-        orderBy: { month: "asc" },
-        select: { id: true, investmentId: true, year: true, month: true, capital: true, capitalUsd: true, encryptedPayload: true, isClosed: true },
-      })
-    )
-  );
-  const snapshotsPrevYear = await Promise.all(
-    portfolios.map((inv) =>
-      prisma.investmentSnapshot.findMany({
-        where: { investmentId: inv.id, year: prevYear },
-        orderBy: { month: "asc" },
-        select: { id: true, investmentId: true, year: true, month: true, capital: true, capitalUsd: true, encryptedPayload: true, isClosed: true },
-      })
-    )
-  );
+  const portfolioIds = portfolios.map((p) => p.id);
+  // batch snapshots in two simple queries instead of one per portfolio (N+1 problem)
+  const allSnapsYear = await prisma.investmentSnapshot.findMany({
+    where: { investmentId: { in: portfolioIds }, year },
+    orderBy: { month: "asc" },
+    select: { id: true, investmentId: true, year: true, month: true, capital: true, capitalUsd: true, encryptedPayload: true, isClosed: true },
+  });
+  const allSnapsPrevYear = await prisma.investmentSnapshot.findMany({
+    where: { investmentId: { in: portfolioIds }, year: prevYear },
+    orderBy: { month: "asc" },
+    select: { id: true, investmentId: true, year: true, month: true, capital: true, capitalUsd: true, encryptedPayload: true, isClosed: true },
+  });
+  // group them into arrays in the same structure the front‑end expects
+  const snapsByInv = new Map<string, typeof allSnapsYear>();
+  for (const s of allSnapsYear) {
+    const arr = snapsByInv.get(s.investmentId) ?? [];
+    arr.push(s);
+    snapsByInv.set(s.investmentId, arr);
+  }
+  const snapsByInvPrev = new Map<string, typeof allSnapsPrevYear>();
+  for (const s of allSnapsPrevYear) {
+    const arr = snapsByInvPrev.get(s.investmentId) ?? [];
+    arr.push(s);
+    snapsByInvPrev.set(s.investmentId, arr);
+  }
+  const snapshotsYear = portfolios.map((p) => snapsByInv.get(p.id) ?? []);
+  const snapshotsPrevYear = portfolios.map((p) => snapsByInvPrev.get(p.id) ?? []);
 
   const snapToMonth = (snaps: { month: number; capital: number | null; capitalUsd: number | null; encryptedPayload: string | null }[]) => {
     const map = new Map(snaps.map((s) => [s.month, s]));
