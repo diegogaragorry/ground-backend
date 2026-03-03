@@ -83,38 +83,45 @@ async function ensurePlannedForYear(userId: string, year: number) {
 
   const monthsOpen = await openMonthsForYear(userId, year);
   const attempted = monthsOpen.length * templates.length;
+  if (monthsOpen.length === 0) return { attempted };
 
-  await prisma.$transaction(
-    monthsOpen.flatMap((m) =>
-      templates.map((t) =>
-        prisma.plannedExpense.upsert({
-          where: {
-            userId_year_month_templateId: {
-              userId,
-              year,
-              month: m,
-              templateId: t.id,
-            },
-          },
-          update: {},
-          create: {
-            userId,
-            year,
-            month: m,
-            templateId: t.id,
-            expenseType: t.expenseType,
-            categoryId: t.categoryId,
-            description: t.description,
-            amountUsd: t.defaultAmountUsd,
-            isConfirmed: false,
-            ...(t.encryptedPayload ? { encryptedPayload: t.encryptedPayload } : {}),
-          },
-        })
-      )
-    )
+  const templateIds = templates.map((t) => t.id);
+  const existing = await prisma.plannedExpense.findMany({
+    where: {
+      userId,
+      year,
+      month: { in: monthsOpen },
+      templateId: { in: templateIds },
+    },
+    select: { month: true, templateId: true },
+  });
+
+  const existingKeys = new Set(existing.map((row) => `${row.month}:${row.templateId}`));
+  const missingRows = monthsOpen.flatMap((month) =>
+    templates
+      .filter((template) => !existingKeys.has(`${month}:${template.id}`))
+      .map((template) => ({
+        userId,
+        year,
+        month,
+        templateId: template.id,
+        expenseType: template.expenseType,
+        categoryId: template.categoryId,
+        description: template.description,
+        amountUsd: template.defaultAmountUsd,
+        isConfirmed: false,
+        ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
+      }))
   );
 
-  return { attempted };
+  if (missingRows.length > 0) {
+    await prisma.plannedExpense.createMany({
+      data: missingRows,
+      skipDuplicates: true,
+    });
+  }
+
+  return { attempted, created: missingRows.length };
 }
 
 /* =========================================================
