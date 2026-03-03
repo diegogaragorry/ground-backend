@@ -149,7 +149,12 @@ export const listPlannedExpenses = async (req: AuthRequest, res: Response) => {
     : {};
 
   const rows = await prisma.plannedExpense.findMany({
-    where: { userId, year, ...whereMonth },
+    where: {
+      userId,
+      year,
+      ...whereMonth,
+      OR: [{ templateId: null }, { template: { showInExpenses: true } }],
+    },
     orderBy: [{ month: "asc" }, { expenseType: "asc" }, { category: { name: "asc" } }, { description: "asc" }],
     include: {
       category: true,
@@ -157,24 +162,10 @@ export const listPlannedExpenses = async (req: AuthRequest, res: Response) => {
     },
   });
 
-  // Ocultar borradores de plantillas con showInExpenses = false
-  const templateIds = [...new Set(rows.map((r) => r.templateId).filter(Boolean))] as string[];
-  const hiddenTemplateIds =
-    templateIds.length === 0
-      ? new Set<string>()
-      : new Set(
-          (await prisma.expenseTemplate.findMany({
-            where: { id: { in: templateIds }, showInExpenses: false },
-            select: { id: true },
-          })).map((t) => t.id)
-        );
-
-  const filtered = rows.filter((r) => !r.templateId || !hiddenTemplateIds.has(r.templateId!));
-
   if (month != null) {
-    res.json({ year, month, rows: filtered });
+    res.json({ year, month, rows });
   } else {
-    res.json({ year, rows: filtered });
+    res.json({ year, rows });
   }
 };
 

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { requireAuth } from "../middlewares/requireAuth";
 import {
   createExpense,
+  expensesPageData,
   listExpensesByMonth,
   listExpensesByYear,
   expensesSummary,
@@ -12,6 +13,7 @@ import {
 const router = Router();
 
 router.post("/", requireAuth, createExpense);
+router.get("/page-data", requireAuth, expensesPageData);
 router.get("/", requireAuth, (req, res, next) => {
   if (req.query?.year != null && req.query?.month == null) {
     return listExpensesByYear(req as any, res);

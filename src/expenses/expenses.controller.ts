@@ -177,6 +177,69 @@ export const listExpensesByMonth = async (req: AuthRequest, res: Response) => {
   res.json(expenses);
 };
 
+export const expensesPageData = async (req: AuthRequest, res: Response) => {
+  const userId = req.userId!;
+  const ym = parseYearMonth(req.query);
+
+  if (!ym) {
+    return res.status(400).json({ error: "Provide ?year=YYYY&month=M" });
+  }
+
+  const start = new Date(Date.UTC(ym.year, ym.month - 1, 1, 0, 0, 0));
+  const end = new Date(Date.UTC(ym.year, ym.month, 1, 0, 0, 0));
+
+  const [categories, expenses, plannedRows, monthCloses] = await Promise.all([
+    prisma.category.findMany({
+      where: { userId },
+      orderBy: { name: "asc" },
+      select: { id: true, name: true, expenseType: true, nameKey: true },
+    }),
+    prisma.expense.findMany({
+      where: { userId, date: { gte: start, lt: end } },
+      orderBy: [
+        { expenseType: "asc" },
+        { category: { name: "asc" } },
+        { description: "asc" },
+      ],
+      include: {
+        category: { select: { id: true, name: true, nameKey: true, expenseType: true } },
+        currency: true,
+      },
+    }),
+    prisma.plannedExpense.findMany({
+      where: {
+        userId,
+        year: ym.year,
+        month: ym.month,
+        OR: [{ templateId: null }, { template: { showInExpenses: true } }],
+      },
+      orderBy: [
+        { expenseType: "asc" },
+        { category: { name: "asc" } },
+        { description: "asc" },
+      ],
+      include: {
+        category: { select: { id: true, name: true, nameKey: true, expenseType: true } },
+        template: { select: { defaultCurrencyId: true } },
+      },
+    }),
+    prisma.monthClose.findMany({
+      where: { userId, year: ym.year },
+      orderBy: { month: "asc" },
+      select: { year: true, month: true, isClosed: true },
+    }),
+  ]);
+
+  res.json({
+    year: ym.year,
+    month: ym.month,
+    categories,
+    expenses,
+    planned: { rows: plannedRows },
+    monthCloses: { year: ym.year, rows: monthCloses },
+  });
+};
+
 export const expensesSummary = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
   const ym = parseYearMonth(req.query);

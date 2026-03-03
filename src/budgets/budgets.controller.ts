@@ -570,7 +570,7 @@ export const pageData = async (req: AuthRequest, res: Response) => {
   const prevYearEnd = new Date(Date.UTC(prevYear + 1, 0, 1, 0, 0, 0));
 
   // buildAnnualData already scans expenses and produces base totals per month; reuse it
-  const [annual, incomeRows, plannedRows, investments, movementRows] = await Promise.all([
+  const [annual, incomeRows, plannedRows, investments, movementRows, expenseRows] = await Promise.all([
     buildAnnualData(userId, year),
     prisma.income.findMany({
       where: { userId, year },
@@ -585,12 +585,17 @@ export const pageData = async (req: AuthRequest, res: Response) => {
     // snapshots are fetched in bulk below
     prisma.investment.findMany({
       where: { userId },
-      select: { id: true, type: true, currencyId: true, targetAnnualReturn: true, yieldStartYear: true, yieldStartMonth: true },
+      select: { id: true, name: true, type: true, currencyId: true, targetAnnualReturn: true, yieldStartYear: true, yieldStartMonth: true },
     }),
     prisma.investmentMovement.findMany({
       where: { investment: { userId }, date: { gte: yearStart, lt: yearEnd } },
       orderBy: [{ date: "asc" }],
       select: { id: true, investmentId: true, date: true, type: true, amount: true, currencyId: true, encryptedPayload: true },
+    }),
+    prisma.expense.findMany({
+      where: { userId, date: { gte: yearStart, lt: yearEnd } },
+      orderBy: [{ date: "asc" }],
+      select: { date: true, amountUsd: true, encryptedPayload: true },
     }),
   ]);
 
@@ -616,6 +621,15 @@ export const pageData = async (req: AuthRequest, res: Response) => {
     // keep same shape consumed by front-end: array of objects with amountUsd
     return amt !== 0 ? [{ amountUsd: amt }] : [];
   }) };
+  const yearExpensesByMonth = { byMonth: Array.from({ length: 12 }, () => [] as Array<{ amountUsd?: number; encryptedPayload?: string | null }>) };
+  for (const row of expenseRows) {
+    const monthIndex = row.date.getUTCMonth();
+    if (monthIndex < 0 || monthIndex >= 12) continue;
+    yearExpensesByMonth.byMonth[monthIndex]?.push({
+      amountUsd: row.amountUsd ?? 0,
+      encryptedPayload: row.encryptedPayload ?? undefined,
+    });
+  }
 
   const portfolios = investments.filter((i) => i.type === "PORTFOLIO");
   const portfolioIds = portfolios.map((p) => p.id);
@@ -629,6 +643,11 @@ export const pageData = async (req: AuthRequest, res: Response) => {
     where: { investmentId: { in: portfolioIds }, year: prevYear },
     orderBy: { month: "asc" },
     select: { id: true, investmentId: true, year: true, month: true, capital: true, capitalUsd: true, encryptedPayload: true, isClosed: true },
+  });
+  const allInvestmentSnapsYear = await prisma.investmentSnapshot.findMany({
+    where: { investment: { userId }, year },
+    orderBy: [{ investmentId: "asc" }, { month: "asc" }],
+    select: { investmentId: true, month: true, capital: true, capitalUsd: true, encryptedPayload: true },
   });
   // group them into arrays in the same structure the front‑end expects
   const snapsByInv = new Map<string, typeof allSnapsYear>();
@@ -646,15 +665,21 @@ export const pageData = async (req: AuthRequest, res: Response) => {
   const snapshotsYear = portfolios.map((p) => snapsByInv.get(p.id) ?? []);
   const snapshotsPrevYear = portfolios.map((p) => snapsByInvPrev.get(p.id) ?? []);
 
-  const snapToMonth = (snaps: { month: number; capital: number | null; capitalUsd: number | null; encryptedPayload: string | null }[]) => {
+  const snapToMonth = (snaps: { id?: string; month: number; capital: number | null; capitalUsd: number | null; encryptedPayload: string | null; isClosed?: boolean }[]) => {
     const map = new Map(snaps.map((s) => [s.month, s]));
     return Array.from({ length: 12 }, (_, i) => i + 1).map((m) => {
       const s = map.get(m);
       return s
-        ? { month: m, closingCapital: s.capital ?? null, closingCapitalUsd: s.capitalUsd ?? null, encryptedPayload: s.encryptedPayload ?? undefined }
-        : { month: m, closingCapital: null, closingCapitalUsd: null, encryptedPayload: undefined };
+        ? { id: s.id ?? null, month: m, closingCapital: s.capital ?? null, closingCapitalUsd: s.capitalUsd ?? null, encryptedPayload: s.encryptedPayload ?? undefined, isClosed: s.isClosed ?? false }
+        : { id: null, month: m, closingCapital: null, closingCapitalUsd: null, encryptedPayload: undefined, isClosed: false };
     });
   };
+  const allSnapsByInv = new Map<string, typeof allInvestmentSnapsYear>();
+  for (const s of allInvestmentSnapsYear) {
+    const arr = allSnapsByInv.get(s.investmentId) ?? [];
+    arr.push(s);
+    allSnapsByInv.set(s.investmentId, arr);
+  }
 
   const movements = {
     year,
@@ -675,8 +700,10 @@ export const pageData = async (req: AuthRequest, res: Response) => {
     income,
     planned,
     expensesByMonth,
+    yearExpensesByMonth,
     investments: investments.map((i) => ({
       id: i.id,
+      name: i.name,
       type: i.type,
       currencyId: i.currencyId,
       targetAnnualReturn: i.targetAnnualReturn,
@@ -685,6 +712,10 @@ export const pageData = async (req: AuthRequest, res: Response) => {
     })),
     snapshotsYear: snapshotsYear.map(snapToMonth),
     snapshotsPrevYear: snapshotsPrevYear.map(snapToMonth),
+    investmentSnapshotsYear: investments.map((inv) => ({
+      investmentId: inv.id,
+      months: snapToMonth(allSnapsByInv.get(inv.id) ?? []),
+    })),
     movements,
   });
 };
