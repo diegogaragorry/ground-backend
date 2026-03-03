@@ -85,7 +85,7 @@ export const listIncome = async (req: AuthRequest, res: Response) => {
       select: { id: true, month: true, amountUsd: true, nominalUsd: true, extraordinaryUsd: true, taxesUsd: true, encryptedPayload: true },
     }),
     prisma.monthClose.findMany({
-      where: { userId, year },
+      where: { userId, year, isClosed: true },
       select: { month: true },
     }),
   ]);
@@ -125,8 +125,8 @@ export const patchIncomeMonth = async (req: AuthRequest, res: Response) => {
   const encryptedPayload = typeof body.encryptedPayload === "string" && body.encryptedPayload.length > 0 ? body.encryptedPayload : undefined;
   const hasEncrypted = !!encryptedPayload;
 
-  const closed = await prisma.monthClose.findUnique({
-    where: { userId_year_month: { userId, year, month } },
+  const closed = await prisma.monthClose.findFirst({
+    where: { userId, year, month, isClosed: true },
   });
   if (closed && !hasEncrypted) {
     return res.status(403).json({ error: "Month is closed; income cannot be edited. Reopen the month in Admin to edit." });

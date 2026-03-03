@@ -132,7 +132,11 @@ export const listExpensesByYear = async (req: AuthRequest, res: Response) => {
   const end = new Date(Date.UTC(year, 12, 1, 0, 0, 0));
   const expenses = await prisma.expense.findMany({
     where: { userId, date: { gte: start, lt: end } },
-    orderBy: { date: "desc" },
+    orderBy: [
+      { expenseType: "asc" },
+      { category: { name: "asc" } },
+      { description: "asc" },
+    ],
     include: {
       category: { select: { id: true, name: true, nameKey: true, expenseType: true } },
       currency: true,
@@ -159,7 +163,11 @@ export const listExpensesByMonth = async (req: AuthRequest, res: Response) => {
 
   const expenses = await prisma.expense.findMany({
     where: { userId, date: { gte: start, lt: end } },
-    orderBy: { date: "desc" },
+    orderBy: [
+      { expenseType: "asc" },
+      { category: { name: "asc" } },
+      { description: "asc" },
+    ],
     include: {
       category: { select: { id: true, name: true, nameKey: true, expenseType: true } },
       currency: true,

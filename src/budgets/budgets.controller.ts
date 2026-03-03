@@ -200,7 +200,7 @@ export const updateOtherExpenses = async (req: AuthRequest, res: Response) => {
 
   if (!hasEncrypted) {
     const closed = await prisma.monthClose.findFirst({
-      where: { userId, year, month },
+      where: { userId, year, month, isClosed: true },
       select: { id: true },
     });
     if (closed) return res.status(409).json({ error: "Month is closed" });

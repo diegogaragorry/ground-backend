@@ -53,7 +53,7 @@ function parseUsdUyuRate(v: any) {
 
 async function openMonthsForYear(userId: string, year: number) {
   const closes = await prisma.monthClose.findMany({
-    where: { userId, year },
+    where: { userId, year, isClosed: true },
     select: { month: true },
   });
   const closed = new Set(closes.map((c) => c.month));
@@ -143,7 +143,7 @@ export const listPlannedExpenses = async (req: AuthRequest, res: Response) => {
 
   const rows = await prisma.plannedExpense.findMany({
     where: { userId, year, ...whereMonth },
-    orderBy: [{ month: "asc" }, { expenseType: "asc" }, { categoryId: "asc" }, { description: "asc" }],
+    orderBy: [{ month: "asc" }, { expenseType: "asc" }, { category: { name: "asc" } }, { description: "asc" }],
     include: {
       category: true,
       template: { select: { defaultCurrencyId: true } },
@@ -195,7 +195,7 @@ export const updatePlannedExpense = async (req: AuthRequest, res: Response) => {
 
   if (!hasEncrypted) {
     const close = await prisma.monthClose.findFirst({
-      where: { userId, year: pe.year, month: pe.month },
+      where: { userId, year: pe.year, month: pe.month, isClosed: true },
       select: { id: true },
     });
     if (close) {
@@ -275,7 +275,7 @@ export const confirmPlannedExpense = async (req: AuthRequest, res: Response) => 
   if (!pe) return res.status(404).json({ error: "PlannedExpense not found" });
 
   const close = await prisma.monthClose.findFirst({
-    where: { userId, year: pe.year, month: pe.month },
+    where: { userId, year: pe.year, month: pe.month, isClosed: true },
     select: { id: true },
   });
   if (close) {
@@ -287,8 +287,9 @@ export const confirmPlannedExpense = async (req: AuthRequest, res: Response) => 
     return res.status(200).json({ expenseId: pe.expense.id });
   }
 
+  const hasEncrypted = typeof pe.encryptedPayload === "string" && pe.encryptedPayload.length > 0;
   let amountUsd = Number(pe.amountUsd ?? 0);
-  if (!Number.isFinite(amountUsd) || amountUsd <= 0) {
+  if (!hasEncrypted && (!Number.isFinite(amountUsd) || amountUsd <= 0)) {
     return res.status(400).json({ error: "amountUsd must be > 0 to confirm" });
   }
 
@@ -297,7 +298,20 @@ export const confirmPlannedExpense = async (req: AuthRequest, res: Response) => 
   let amount = amountUsd;
   let usdUyuRate: number | null = null;
 
-  if (isUyu) {
+  if (hasEncrypted) {
+    currencyId = isUyu ? "UYU" : "USD";
+    amount = Number.isFinite((pe as any).amount) && Number((pe as any).amount) > 0 ? Math.round(Number((pe as any).amount)) : 0;
+    amountUsd = Number.isFinite(amountUsd) && amountUsd > 0 ? amountUsd : 0;
+
+    const bodyRate = Number((req.body as any)?.usdUyuRate);
+    const peRate = Number((pe as any).usdUyuRate);
+    usdUyuRate =
+      currencyId === "UYU" && Number.isFinite(peRate) && peRate > 0
+        ? peRate
+        : currencyId === "UYU" && Number.isFinite(bodyRate) && bodyRate > 0
+          ? bodyRate
+          : null;
+  } else if (isUyu) {
     const peAmount = (pe as any).amount;
     const peRate = (pe as any).usdUyuRate;
     const bodyRate = Number((req.body as any)?.usdUyuRate);
@@ -345,6 +359,7 @@ export const confirmPlannedExpense = async (req: AuthRequest, res: Response) => 
         date,
         expenseType: pe.expenseType,
         plannedExpenseId: pe.id,
+        ...(hasEncrypted ? { encryptedPayload: pe.encryptedPayload } : {}),
       },
     });
 

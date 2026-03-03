@@ -22,9 +22,9 @@ export function serverYear() {
 }
 
 export async function openMonthsForYear(userId: string, year: number) {
-  // Mes cerrado = existe MonthClose para ese year+month
+  // Mes cerrado = existe MonthClose con isClosed=true para ese year+month
   const closes = await prisma.monthClose.findMany({
-    where: { userId, year },
+    where: { userId, year, isClosed: true },
     select: { month: true },
   });
   const closed = new Set(closes.map((c) => c.month));

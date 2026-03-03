@@ -20,7 +20,7 @@ function paramId(params: { id?: string | string[] }): string {
 
 async function openMonthsForYear(userId: string, year: number) {
   const closes = await prisma.monthClose.findMany({
-    where: { userId, year },
+    where: { userId, year, isClosed: true },
     select: { month: true },
   });
 
