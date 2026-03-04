@@ -13,6 +13,14 @@ function normalizeEmail(email: string) {
   return String(email || "").trim().toLowerCase();
 }
 
+function normalizeName(value: unknown) {
+  return String(value ?? "").trim().replace(/\s+/g, " ");
+}
+
+function normalizeCountry(value: unknown) {
+  return String(value ?? "").trim().replace(/\s+/g, " ");
+}
+
 function gen6() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
@@ -37,15 +45,37 @@ function getUserAgent(req: Request) {
   return String(req.headers["user-agent"] || "").slice(0, 400);
 }
 
+function parseRegistrationProfile(body: any) {
+  const firstName = normalizeName(body?.firstName);
+  const lastName = normalizeName(body?.lastName);
+  const country = normalizeCountry(body?.country);
+  const rawPhone = String(body?.phone ?? "").trim();
+  const phone = normalizePhone(rawPhone) || rawPhone.replace(/\s/g, "");
+
+  if (!firstName || firstName.length < 2) return { error: "firstName is required" as const };
+  if (!lastName || lastName.length < 2) return { error: "lastName is required" as const };
+  if (!country || country.length < 2) return { error: "country is required" as const };
+  if (!phone || phone.length < 10) return { error: "Valid phone number is required" as const };
+
+  return {
+    firstName: firstName.slice(0, 80),
+    lastName: lastName.slice(0, 80),
+    country: country.slice(0, 80),
+    phone: phone.slice(0, 32),
+  };
+}
+
 /**
  * POST /auth/register/request-code
- * Body: { email }
+ * Body: { email, firstName, lastName, phone, country }
  */
 export const registerRequestCode = async (req: Request, res: Response) => {
   try {
     const email = normalizeEmail(req.body?.email);
+    const profile = parseRegistrationProfile(req.body);
 
     if (!email) return res.status(400).json({ error: "email is required" });
+    if ("error" in profile) return res.status(400).json({ error: profile.error });
 
     const existingUser = await prisma.user.findUnique({ where: { email } });
     if (existingUser) return res.status(409).json({ error: "User already exists" });
@@ -105,15 +135,19 @@ export const registerRequestCode = async (req: Request, res: Response) => {
 
 /**
  * POST /auth/register/verify
- * Body: { email, code, password }
+ * Body: { email, code, password, firstName, lastName, phone, country }
  */
 export const registerVerify = async (req: Request, res: Response) => {
   const email = normalizeEmail(req.body?.email);
   const code = String(req.body?.code || "").trim();
   const password = String(req.body?.password || "");
+  const profile = parseRegistrationProfile(req.body);
 
   if (!email || !code || !password) {
     return res.status(400).json({ error: "email, code and password are required" });
+  }
+  if ("error" in profile) {
+    return res.status(400).json({ error: profile.error });
   }
 
   if (password.length < 8) {
@@ -164,7 +198,16 @@ export const registerVerify = async (req: Request, res: Response) => {
 
   try {
     const user = await prisma.user.create({
-      data: { email, password: hashedPassword, role: "USER", encryptionSalt: encryptionSalt || undefined },
+      data: {
+        email,
+        password: hashedPassword,
+        firstName: profile.firstName,
+        lastName: profile.lastName,
+        country: profile.country,
+        phone: profile.phone,
+        role: "USER",
+        encryptionSalt: encryptionSalt || undefined,
+      },
     });
 
     await bootstrapUserData(user.id);
@@ -196,13 +239,28 @@ export const registerVerify = async (req: Request, res: Response) => {
 
     const created = await prisma.user.findUnique({
       where: { id: user.id },
-      select: { id: true, email: true, role: true, encryptionSalt: true, encryptedRecoveryPackage: true, phoneVerifiedAt: true },
+      select: {
+        id: true,
+        email: true,
+        firstName: true,
+        lastName: true,
+        country: true,
+        phone: true,
+        role: true,
+        encryptionSalt: true,
+        encryptedRecoveryPackage: true,
+        phoneVerifiedAt: true,
+      },
     });
     return res.status(201).json({
       token,
       user: {
         id: created!.id,
         email: created!.email,
+        firstName: created!.firstName ?? undefined,
+        lastName: created!.lastName ?? undefined,
+        country: created!.country ?? undefined,
+        phone: created!.phone ?? undefined,
         role: created!.role,
         encryptionSalt: created!.encryptionSalt ?? undefined,
         recoveryEnabled: !!(created!.encryptedRecoveryPackage && created!.phoneVerifiedAt),
@@ -358,14 +416,18 @@ export const login = async (req: Request, res: Response) => {
     const user = await prisma.user.findUnique({
       where: { email },
       select: {
-        id: true,
-        email: true,
-        role: true,
-        password: true,
-        encryptionSalt: true,
-        encryptedRecoveryPackage: true,
-        phoneVerifiedAt: true,
-      },
+      id: true,
+      email: true,
+      firstName: true,
+      lastName: true,
+      country: true,
+      role: true,
+      password: true,
+      encryptionSalt: true,
+      phone: true,
+      encryptedRecoveryPackage: true,
+      phoneVerifiedAt: true,
+    },
     });
     if (!user) return res.status(401).json({ error: "Invalid credentials" });
 
@@ -410,6 +472,10 @@ export const login = async (req: Request, res: Response) => {
       user: {
         id: user.id,
         email: user.email,
+        firstName: user.firstName ?? undefined,
+        lastName: user.lastName ?? undefined,
+        country: user.country ?? undefined,
+        phone: user.phone ?? undefined,
         role: user.role,
         encryptionSalt: encryptionSalt ?? undefined,
         recoveryEnabled,
@@ -437,6 +503,9 @@ export const me = async (req: AuthRequest, res: Response) => {
     select: {
       id: true,
       email: true,
+      firstName: true,
+      lastName: true,
+      country: true,
       role: true,
       createdAt: true,
       forceOnboardingNextLogin: true,
@@ -461,22 +530,43 @@ export const me = async (req: AuthRequest, res: Response) => {
 const ONBOARDING_STEPS = ["welcome", "admin", "expenses", "investments", "budget", "dashboard", "done"] as const;
 
 /**
- * PATCH /auth/me — update forceOnboardingNextLogin, onboardingStep, mobileWarningDismissed, preferredDisplayCurrencyId
+ * PATCH /auth/me — update profile and preferences
  */
 export const patchMe = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
   const body = req.body as {
+    firstName?: string | null;
+    lastName?: string | null;
+    country?: string | null;
     forceOnboardingNextLogin?: boolean;
     onboardingStep?: string;
     mobileWarningDismissed?: boolean;
     preferredDisplayCurrencyId?: string | null;
   } | undefined;
   const data: {
+    firstName?: string | null;
+    lastName?: string | null;
+    country?: string | null;
     forceOnboardingNextLogin?: boolean;
     onboardingStep?: string;
     mobileWarningDismissed?: boolean;
     preferredDisplayCurrencyId?: string | null;
   } = {};
+  if (body?.firstName !== undefined) {
+    const v = normalizeName(body.firstName);
+    if (!v || v.length < 2) return res.status(400).json({ error: "firstName is required" });
+    data.firstName = v.slice(0, 80);
+  }
+  if (body?.lastName !== undefined) {
+    const v = normalizeName(body.lastName);
+    if (!v || v.length < 2) return res.status(400).json({ error: "lastName is required" });
+    data.lastName = v.slice(0, 80);
+  }
+  if (body?.country !== undefined) {
+    const v = normalizeCountry(body.country);
+    if (!v || v.length < 2) return res.status(400).json({ error: "country is required" });
+    data.country = v.slice(0, 80);
+  }
   if (body?.forceOnboardingNextLogin === false) {
     data.forceOnboardingNextLogin = false;
   }
