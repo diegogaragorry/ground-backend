@@ -22,7 +22,7 @@ type Inv = {
   yieldStartMonth: number | null;
 };
 
-type Snap = { month: number; capitalUsd: number | null };
+type Snap = { month: number; capitalUsd: number | null; isClosed?: boolean };
 
 function yieldStartMonthForYear(inv: Inv, year: number) {
   if (inv.yieldStartYear != null && inv.yieldStartYear > year) return 13;
@@ -31,11 +31,14 @@ function yieldStartMonthForYear(inv: Inv, year: number) {
 }
 
 function capitalUsdForMonth(inv: Inv, snaps: Snap[], m: number, year: number) {
-  const byM = new Map<number, number | null>();
-  for (const s of snaps) byM.set(s.month, s.capitalUsd);
+  const byM = new Map<number, { capitalUsd: number | null; isClosed?: boolean }>();
+  for (const s of snaps) byM.set(s.month, { capitalUsd: s.capitalUsd, isClosed: s.isClosed ?? false });
 
   const direct = byM.get(m);
-  if (direct != null) return direct;
+  if (direct) {
+    const isOpenZeroPlaceholder = !direct.isClosed && (direct.capitalUsd ?? 0) === 0;
+    if (!isOpenZeroPlaceholder && direct.capitalUsd != null) return direct.capitalUsd;
+  }
 
   // base anterior
   let baseMonth: number | null = null;
@@ -43,9 +46,11 @@ function capitalUsdForMonth(inv: Inv, snaps: Snap[], m: number, year: number) {
 
   for (let i = m - 1; i >= 1; i--) {
     const v = byM.get(i);
-    if (v != null) {
+    if (!v) continue;
+    const isOpenZeroPlaceholder = !v.isClosed && (v.capitalUsd ?? 0) === 0;
+    if (!isOpenZeroPlaceholder && v.capitalUsd != null) {
       baseMonth = i;
-      baseValue = v;
+      baseValue = v.capitalUsd;
       break;
     }
   }
@@ -62,13 +67,13 @@ function capitalUsdForMonth(inv: Inv, snaps: Snap[], m: number, year: number) {
 async function buildSnapshotsByInv(userId: string, year: number) {
   const snaps = await prisma.investmentSnapshot.findMany({
     where: { investment: { userId }, year },
-    select: { investmentId: true, month: true, capitalUsd: true },
+    select: { investmentId: true, month: true, capitalUsd: true, isClosed: true },
   });
 
   const snapsByInv = new Map<string, Snap[]>();
   for (const s of snaps) {
     const arr = snapsByInv.get(s.investmentId) ?? [];
-    arr.push({ month: s.month, capitalUsd: s.capitalUsd ?? null });
+    arr.push({ month: s.month, capitalUsd: s.capitalUsd ?? null, isClosed: s.isClosed ?? false });
     snapsByInv.set(s.investmentId, arr);
   }
   return snapsByInv;

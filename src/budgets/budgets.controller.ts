@@ -247,13 +247,14 @@ type SnapRow = {
   month: number;
   capital: number | null;
   capitalUsd: number | null;
+  isClosed?: boolean;
 };
 
 function buildInvMonthMap(invId: string, rows: SnapRow[]) {
-  const m = new Map<number, { capital: number | null; capitalUsd: number | null }>();
+  const m = new Map<number, { capital: number | null; capitalUsd: number | null; isClosed?: boolean }>();
   for (const r of rows) {
     if (r.investmentId !== invId) continue;
-    m.set(r.month, { capital: r.capital ?? null, capitalUsd: r.capitalUsd ?? null });
+    m.set(r.month, { capital: r.capital ?? null, capitalUsd: r.capitalUsd ?? null, isClosed: r.isClosed ?? false });
   }
   return m;
 }
@@ -338,11 +339,16 @@ export async function buildAnnualData(userId: string, year: number): Promise<{ y
   // snapshots: capital + capitalUsd
   const snaps = await prisma.investmentSnapshot.findMany({
     where: { investment: { userId }, year },
-    select: { investmentId: true, month: true, capital: true, capitalUsd: true },
+    select: { investmentId: true, month: true, capital: true, capitalUsd: true, isClosed: true },
   });
   const explicitSnapshotMonths = new Set<number>();
   for (const s of snaps) {
-    if ((s.capital != null || s.capitalUsd != null) && s.month >= 1 && s.month <= 12) {
+    const cap = s.capital ?? 0;
+    const capUsd = s.capitalUsd ?? 0;
+    const hasMeaningfulValue = cap !== 0 || capUsd !== 0;
+    // Ignore open 0/0 placeholders (common after onboarding/E2EE flows):
+    // those should not reset net worth anchors/projections.
+    if ((hasMeaningfulValue || s.isClosed) && s.month >= 1 && s.month <= 12) {
       explicitSnapshotMonths.add(s.month);
     }
   }
@@ -352,23 +358,27 @@ export async function buildAnnualData(userId: string, year: number): Promise<{ y
   const fxByMonth = new Map<number, number>();
   months12.forEach((m, i) => fxByMonth.set(m, fxValues[i]));
 
-  function snapUsdFor(inv: InvLite, snap: { capital: number | null; capitalUsd: number | null }, m: number) {
-    if (snap.capitalUsd != null) return snap.capitalUsd;
-    if (snap.capital == null) return null;
+  function snapUsdFor(inv: InvLite, snap: { capital: number | null; capitalUsd: number | null; isClosed?: boolean }, m: number) {
+    const cap = snap.capital;
+    const capUsd = snap.capitalUsd;
+    const isOpenZeroPlaceholder = !snap.isClosed && (cap ?? 0) === 0 && (capUsd ?? 0) === 0;
+    if (isOpenZeroPlaceholder) return null;
+    if (capUsd != null) return capUsd;
+    if (cap == null) return null;
 
     const cur = (inv.currencyId ?? "USD").toUpperCase();
     if (cur === "USD") return snap.capital;
 
     if (cur === "UYU") {
       const fx = fxByMonth.get(m) ?? 38;
-      return fx > 0 ? snap.capital / fx : 0;
+      return fx > 0 ? cap / fx : 0;
     }
 
     // moneda desconocida: asumimos USD
-    return snap.capital;
+    return cap;
   }
 
-  function capitalUsdPortfolio(inv: InvLite, byM: Map<number, { capital: number | null; capitalUsd: number | null }>, m: number) {
+  function capitalUsdPortfolio(inv: InvLite, byM: Map<number, { capital: number | null; capitalUsd: number | null; isClosed?: boolean }>, m: number) {
     const directSnap = byM.get(m);
     if (directSnap) {
       const directUsd = snapUsdFor(inv, directSnap, m);
@@ -399,7 +409,7 @@ export async function buildAnnualData(userId: string, year: number): Promise<{ y
     return baseUsd * Math.pow(monthlyFactor(inv.targetAnnualReturn ?? 0), diff);
   }
 
-  function capitalUsdAccountCarry(inv: InvLite, byM: Map<number, { capital: number | null; capitalUsd: number | null }>, m: number) {
+  function capitalUsdAccountCarry(inv: InvLite, byM: Map<number, { capital: number | null; capitalUsd: number | null; isClosed?: boolean }>, m: number) {
     const directSnap = byM.get(m);
     if (directSnap) {
       const directUsd = snapUsdFor(inv, directSnap, m);
