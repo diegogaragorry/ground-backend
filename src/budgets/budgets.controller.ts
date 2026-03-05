@@ -259,6 +259,10 @@ function buildInvMonthMap(invId: string, rows: SnapRow[]) {
 }
 
 export async function buildAnnualData(userId: string, year: number): Promise<{ year: number; months: any[]; expensesUsdByMonth?: Record<number, number> }> {
+  const now = new Date();
+  const currentYear = now.getUTCFullYear();
+  const currentMonth = now.getUTCMonth() + 1;
+
   // -------- MonthCloses (locked)
   const closes = await prisma.monthClose.findMany({
     where: { userId, year },
@@ -510,10 +514,13 @@ export async function buildAnnualData(userId: string, year: number): Promise<{ y
 
     const incomeUsd = incomeByMonth.get(m) ?? 0;
 
-    // ✅ regla: si hay actuals, usamos actual; si no, usamos drafts
+    // Regla: si hay actuals, usamos actual.
+    // Si no hay actuals, usamos drafts solo para mes actual/futuros.
+    // Meses pasados sin actuals deben quedar en 0.
     const actualBase = actualByMonth.get(m) ?? 0;
     const plannedBase = plannedByMonth.get(m) ?? 0;
-    const baseExpensesUsd = actualBase > 0 ? actualBase : plannedBase;
+    const isPastMonth = year < currentYear || (year === currentYear && m < currentMonth);
+    const baseExpensesUsd = actualBase > 0 ? actualBase : (isPastMonth ? 0 : plannedBase);
 
     const otherData = otherByMonth.get(m);
     const otherExpensesUsd = otherData?.otherExpensesUsd ?? 0;
