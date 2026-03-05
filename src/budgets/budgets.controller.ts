@@ -340,6 +340,12 @@ export async function buildAnnualData(userId: string, year: number): Promise<{ y
     where: { investment: { userId }, year },
     select: { investmentId: true, month: true, capital: true, capitalUsd: true },
   });
+  const explicitSnapshotMonths = new Set<number>();
+  for (const s of snaps) {
+    if ((s.capital != null || s.capitalUsd != null) && s.month >= 1 && s.month <= 12) {
+      explicitSnapshotMonths.add(s.month);
+    }
+  }
 
   // FX por mes (para convertir UYU si falta capitalUsd) — en paralelo
   const fxValues = await Promise.all(months12.map((m) => getUsdUyuRateForMonthOrDefault(userId, year, m)));
@@ -529,7 +535,11 @@ export async function buildAnnualData(userId: string, year: number): Promise<{ y
     const investmentEarningsUsd = portfolioRealReturns[idx] ?? 0;
     const balanceUsd = incomeUsd - expensesUsd + investmentEarningsUsd;
 
-    const netWorthStartUsd = m === 1 ? (totalNWBaseline[0] ?? 0) : prevNetWorthStart + prevBalance;
+    const chainedNetWorthStartUsd = m === 1 ? (totalNWBaseline[0] ?? 0) : prevNetWorthStart + prevBalance;
+    const baselineNetWorthStartUsd = totalNWBaseline[idx] ?? chainedNetWorthStartUsd;
+    // If user has an explicit snapshot in this month, anchor start net worth to baseline
+    // so first active month reflects actual loaded capital (instead of carrying from prior months).
+    const netWorthStartUsd = explicitSnapshotMonths.has(m) ? baselineNetWorthStartUsd : chainedNetWorthStartUsd;
 
     months.push({
       month: m,
