@@ -121,15 +121,10 @@ export const recoveryRequest = async (req: Request, res: Response) => {
         userAgent: getUserAgent(req),
       },
     });
-    try {
-      await sendPasswordResetCodeEmail(email, code);
-    } catch (err) {
+    // Respond immediately as in other auth flows; email is sent in background.
+    sendPasswordResetCodeEmail(email, code).catch((err) => {
       console.error("recovery fallback sendPasswordResetCodeEmail error", err);
-      return res.status(503).json({
-        error: "Could not send reset code. Email service may be misconfigured.",
-        detail: err instanceof Error ? err.message : String(err),
-      });
-    }
+    });
     return res.status(200).json({ ok: true, emailOnly: true });
   }
 

@@ -61,10 +61,20 @@ const recoverySetup = async (req, res) => {
     }
 };
 exports.recoverySetup = recoverySetup;
+function getClientIp(req) {
+    const xf = req.headers["x-forwarded-for"] || "";
+    const first = xf.split(",")[0]?.trim();
+    return first || (req.socket.remoteAddress ?? undefined);
+}
+function getUserAgent(req) {
+    const ua = req.headers["user-agent"];
+    return ua ? String(ua).slice(0, 500) : undefined;
+}
 /**
  * POST /auth/recovery/request
  * Body: { email }
- * Creates RecoverySession, sends email code + SMS code. Generic response to avoid leaking existence.
+ * If user has recovery (phone + package): creates RecoverySession, sends email + SMS.
+ * If user exists but no recovery: sends email-only code (same as forgot-password) so they can reset.
  */
 const recoveryRequest = async (req, res) => {
     const email = normalizeEmail(req.body?.email ?? "");
@@ -74,8 +84,45 @@ const recoveryRequest = async (req, res) => {
         where: { email },
         select: { id: true, phone: true, encryptedRecoveryPackage: true, phoneVerifiedAt: true },
     });
-    if (!user || !user.phone || !user.encryptedRecoveryPackage || !user.phoneVerifiedAt) {
+    // User doesn't exist: generic response to avoid leaking
+    if (!user)
         return res.status(200).json({ ok: true });
+    // User exists but no recovery set up: fallback to email-only code so they get at least the email
+    if (!user.phone || !user.encryptedRecoveryPackage || !user.phoneVerifiedAt) {
+        const purpose = "password_reset";
+        const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000);
+        const recentCount = await prisma_1.prisma.emailVerificationCode.count({
+            where: { email, purpose, createdAt: { gte: tenMinAgo } },
+        });
+        if (recentCount >= 3) {
+            return res.status(429).json({ error: "Too many requests. Try again later." });
+        }
+        const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000);
+        const latestSent = await prisma_1.prisma.emailVerificationCode.findFirst({
+            where: { email, purpose, createdAt: { gte: twoMinAgo } },
+            orderBy: { createdAt: "desc" },
+        });
+        if (latestSent) {
+            return res.status(200).json({ ok: true, emailOnly: true });
+        }
+        const code = gen6();
+        const codeHash = hashCode(email, code);
+        const expiresAt = new Date(Date.now() + 20 * 60 * 1000);
+        await prisma_1.prisma.emailVerificationCode.create({
+            data: {
+                email,
+                codeHash,
+                purpose,
+                expiresAt,
+                ip: getClientIp(req),
+                userAgent: getUserAgent(req),
+            },
+        });
+        // Respond immediately as in other auth flows; email is sent in background.
+        (0, mailer_1.sendPasswordResetCodeEmail)(email, code).catch((err) => {
+            console.error("recovery fallback sendPasswordResetCodeEmail error", err);
+        });
+        return res.status(200).json({ ok: true, emailOnly: true });
     }
     const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
     const recent = await prisma_1.prisma.recoverySession.findFirst({
