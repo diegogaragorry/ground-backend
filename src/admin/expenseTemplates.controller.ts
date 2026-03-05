@@ -33,8 +33,20 @@ export async function openMonthsForYear(userId: string, year: number) {
   return out;
 }
 
-export async function ensurePlannedForTemplate(userId: string, year: number, template: { id: string; expenseType: any; categoryId: string; description: string; defaultAmountUsd: number | null; encryptedPayload?: string | null }) {
-  const monthsOpen = await openMonthsForYear(userId, year);
+function clampStartMonth(v: unknown) {
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 1 || n > 12) return 1;
+  return n;
+}
+
+export async function ensurePlannedForTemplate(
+  userId: string,
+  year: number,
+  template: { id: string; expenseType: any; categoryId: string; description: string; defaultAmountUsd: number | null; encryptedPayload?: string | null },
+  startMonth = 1
+) {
+  const fromMonth = clampStartMonth(startMonth);
+  const monthsOpen = (await openMonthsForYear(userId, year)).filter((m) => m >= fromMonth);
 
   await prisma.$transaction(
     monthsOpen.map((m) =>
@@ -65,11 +77,17 @@ export async function ensurePlannedForTemplate(userId: string, year: number, tem
   );
 }
 
-async function syncPlannedAfterTemplateUpdate(userId: string, year: number, template: { id: string; expenseType: any; categoryId: string; description: string; defaultAmountUsd: number | null; encryptedPayload?: string | null }) {
-  const monthsOpen = await openMonthsForYear(userId, year);
+async function syncPlannedAfterTemplateUpdate(
+  userId: string,
+  year: number,
+  template: { id: string; expenseType: any; categoryId: string; description: string; defaultAmountUsd: number | null; encryptedPayload?: string | null },
+  startMonth = 1
+) {
+  const fromMonth = clampStartMonth(startMonth);
+  const monthsOpen = (await openMonthsForYear(userId, year)).filter((m) => m >= fromMonth);
 
   // a) crear los que falten
-  await ensurePlannedForTemplate(userId, year, template);
+  await ensurePlannedForTemplate(userId, year, template, fromMonth);
 
   // b) actualizar SOLO los no confirmados en meses abiertos
   await prisma.plannedExpense.updateMany({
@@ -165,6 +183,7 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
   if (!cat) return res.status(403).json({ error: "Invalid categoryId for this user" });
 
   const year = serverYear();
+  const startMonth = clampStartMonth(req.body?.startMonth);
 
   try {
     const created = await prisma.expenseTemplate.create({
@@ -188,7 +207,7 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
       description: created.description,
       defaultAmountUsd: created.defaultAmountUsd ?? null,
       encryptedPayload: created.encryptedPayload ?? undefined,
-    });
+    }, startMonth);
 
     res.status(201).json(created);
   } catch (e: any) {
@@ -217,7 +236,7 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
             },
           });
         }
-        await syncPlannedAfterTemplateUpdate(userId, year, templatePayload);
+        await syncPlannedAfterTemplateUpdate(userId, year, templatePayload, startMonth);
         const updated = await prisma.expenseTemplate.findUnique({
           where: { id: existing.id },
           include: { category: true },
