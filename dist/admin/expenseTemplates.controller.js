@@ -23,9 +23,9 @@ function serverYear() {
     return new Date().getUTCFullYear();
 }
 async function openMonthsForYear(userId, year) {
-    // Mes cerrado = existe MonthClose para ese year+month
+    // Mes cerrado = existe MonthClose con isClosed=true para ese year+month
     const closes = await prisma_1.prisma.monthClose.findMany({
-        where: { userId, year },
+        where: { userId, year, isClosed: true },
         select: { month: true },
     });
     const closed = new Set(closes.map((c) => c.month));
@@ -35,8 +35,15 @@ async function openMonthsForYear(userId, year) {
             out.push(m);
     return out;
 }
-async function ensurePlannedForTemplate(userId, year, template) {
-    const monthsOpen = await openMonthsForYear(userId, year);
+function clampStartMonth(v) {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 1 || n > 12)
+        return 1;
+    return n;
+}
+async function ensurePlannedForTemplate(userId, year, template, startMonth = 1) {
+    const fromMonth = clampStartMonth(startMonth);
+    const monthsOpen = (await openMonthsForYear(userId, year)).filter((m) => m >= fromMonth);
     await prisma_1.prisma.$transaction(monthsOpen.map((m) => prisma_1.prisma.plannedExpense.upsert({
         where: {
             userId_year_month_templateId: {
@@ -61,10 +68,11 @@ async function ensurePlannedForTemplate(userId, year, template) {
         },
     })));
 }
-async function syncPlannedAfterTemplateUpdate(userId, year, template) {
-    const monthsOpen = await openMonthsForYear(userId, year);
+async function syncPlannedAfterTemplateUpdate(userId, year, template, startMonth = 1) {
+    const fromMonth = clampStartMonth(startMonth);
+    const monthsOpen = (await openMonthsForYear(userId, year)).filter((m) => m >= fromMonth);
     // a) crear los que falten
-    await ensurePlannedForTemplate(userId, year, template);
+    await ensurePlannedForTemplate(userId, year, template, fromMonth);
     // b) actualizar SOLO los no confirmados en meses abiertos
     await prisma_1.prisma.plannedExpense.updateMany({
         where: {
@@ -155,6 +163,7 @@ const createExpenseTemplate = async (req, res) => {
     if (!cat)
         return res.status(403).json({ error: "Invalid categoryId for this user" });
     const year = serverYear();
+    const startMonth = clampStartMonth(req.body?.startMonth);
     try {
         const created = await prisma_1.prisma.expenseTemplate.create({
             data: {
@@ -176,7 +185,7 @@ const createExpenseTemplate = async (req, res) => {
             description: created.description,
             defaultAmountUsd: created.defaultAmountUsd ?? null,
             encryptedPayload: created.encryptedPayload ?? undefined,
-        });
+        }, startMonth);
         res.status(201).json(created);
     }
     catch (e) {
@@ -205,7 +214,7 @@ const createExpenseTemplate = async (req, res) => {
                         },
                     });
                 }
-                await syncPlannedAfterTemplateUpdate(userId, year, templatePayload);
+                await syncPlannedAfterTemplateUpdate(userId, year, templatePayload, startMonth);
                 const updated = await prisma_1.prisma.expenseTemplate.findUnique({
                     where: { id: existing.id },
                     include: { category: true },
@@ -227,7 +236,7 @@ const updateExpenseTemplate = async (req, res) => {
         return res.status(400).json({ error: "Invalid id" });
     const existing = await prisma_1.prisma.expenseTemplate.findFirst({
         where: { id, userId },
-        select: { id: true, categoryId: true, expenseType: true, defaultCurrencyId: true },
+        select: { id: true, categoryId: true, expenseType: true, defaultCurrencyId: true, defaultAmountUsd: true },
     });
     if (!existing)
         return res.status(404).json({ error: "Template not found" });
@@ -236,7 +245,9 @@ const updateExpenseTemplate = async (req, res) => {
     if (hasEncrypted) {
         patch.encryptedPayload = req.body.encryptedPayload;
         patch.description = encryptedPlaceholder();
-        patch.defaultAmountUsd = 0;
+        // Preserve the numeric default already stored in DB so a stale encryption snapshot
+        // cannot erase amounts that the onboarding just saved milliseconds earlier.
+        patch.defaultAmountUsd = existing.defaultAmountUsd ?? null;
     }
     // categoryId (and type derived from it)
     if (req.body?.categoryId != null) {

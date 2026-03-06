@@ -258,7 +258,7 @@ export const updateExpenseTemplate = async (req: AuthRequest, res: Response) => 
 
   const existing = await prisma.expenseTemplate.findFirst({
     where: { id, userId },
-    select: { id: true, categoryId: true, expenseType: true, defaultCurrencyId: true },
+    select: { id: true, categoryId: true, expenseType: true, defaultCurrencyId: true, defaultAmountUsd: true },
   });
   if (!existing) return res.status(404).json({ error: "Template not found" });
 
@@ -268,7 +268,9 @@ export const updateExpenseTemplate = async (req: AuthRequest, res: Response) => 
   if (hasEncrypted) {
     patch.encryptedPayload = req.body.encryptedPayload;
     patch.description = encryptedPlaceholder();
-    patch.defaultAmountUsd = 0;
+    // Preserve the numeric default already stored in DB so a stale encryption snapshot
+    // cannot erase amounts that the onboarding just saved milliseconds earlier.
+    patch.defaultAmountUsd = existing.defaultAmountUsd ?? null;
   }
 
   // categoryId (and type derived from it)
