@@ -1,4 +1,6 @@
 import nodemailer from "nodemailer";
+import { buildPasswordResetCodeEmail, buildSignupCodeEmail } from "./authMessages";
+import type { PreferredLanguage } from "./preferredLanguage";
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const EMAIL_FROM = process.env.EMAIL_FROM || "";
@@ -63,20 +65,11 @@ function sendViaResend(recipient: string, subject: string, html: string, text: s
  *            2) Si SMTP falla por red (ej. Railway bloquea puerto 587), usa Resend si RESEND_API_KEY está definida.
  *            3) Solo Resend si no hay SMTP.
  */
-export async function sendSignupCodeEmail(to: string, code: string) {
+export async function sendSignupCodeEmail(to: string, code: string, language?: PreferredLanguage | string | null) {
   const recipient = String(to || "").trim();
   if (!recipient) throw new Error("Missing recipient email (to)");
 
-  const subject = "Your Ground verification code";
-  const text = `Your Ground verification code is: ${code}\n\nIt expires in 20 minutes.`;
-  const html = `
-    <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;line-height:1.4">
-      <h2 style="margin:0 0 12px">Verify your email</h2>
-      <p style="margin:0 0 10px">Your Ground verification code is:</p>
-      <div style="font-size:28px;font-weight:800;letter-spacing:6px;margin:10px 0 18px">${code}</div>
-      <p style="margin:0;color:#555">This code expires in 20 minutes.</p>
-    </div>
-  `;
+  const { subject, text, html } = buildSignupCodeEmail(code, language);
 
   if (transporter) {
     try {
@@ -105,20 +98,11 @@ export async function sendSignupCodeEmail(to: string, code: string) {
 /**
  * Envía el código para resetear contraseña (misma infra que signup).
  */
-export async function sendPasswordResetCodeEmail(to: string, code: string) {
+export async function sendPasswordResetCodeEmail(to: string, code: string, language?: PreferredLanguage | string | null) {
   const recipient = String(to || "").trim();
   if (!recipient) throw new Error("Missing recipient email (to)");
 
-  const subject = "Reset your Ground password";
-  const text = `Your password reset code is: ${code}\n\nIt expires in 20 minutes.`;
-  const html = `
-    <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;line-height:1.4">
-      <h2 style="margin:0 0 12px">Reset your password</h2>
-      <p style="margin:0 0 10px">Your password reset code is:</p>
-      <div style="font-size:28px;font-weight:800;letter-spacing:6px;margin:10px 0 18px">${code}</div>
-      <p style="margin:0;color:#555">This code expires in 20 minutes. If you didn't request this, you can ignore this email.</p>
-    </div>
-  `;
+  const { subject, text, html } = buildPasswordResetCodeEmail(code, language);
 
   if (transporter) {
     try {

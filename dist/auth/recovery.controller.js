@@ -10,6 +10,8 @@ const crypto_1 = __importDefault(require("crypto"));
 const prisma_1 = require("../lib/prisma");
 const recoveryCrypto_1 = require("../lib/recoveryCrypto");
 const mailer_1 = require("../lib/mailer");
+const authMessages_1 = require("../lib/authMessages");
+const preferredLanguage_1 = require("../lib/preferredLanguage");
 const sms_1 = require("../lib/sms");
 function normalizeEmail(email) {
     return String(email || "").trim().toLowerCase();
@@ -82,8 +84,9 @@ const recoveryRequest = async (req, res) => {
         return res.status(400).json({ error: "email is required" });
     const user = await prisma_1.prisma.user.findUnique({
         where: { email },
-        select: { id: true, phone: true, encryptedRecoveryPackage: true, phoneVerifiedAt: true },
+        select: { id: true, phone: true, encryptedRecoveryPackage: true, phoneVerifiedAt: true, preferredLanguage: true },
     });
+    const preferredLanguage = (0, preferredLanguage_1.resolvePreferredLanguage)(user?.preferredLanguage, (0, preferredLanguage_1.getRequestPreferredLanguage)(req));
     // User doesn't exist: generic response to avoid leaking
     if (!user)
         return res.status(200).json({ ok: true });
@@ -119,7 +122,7 @@ const recoveryRequest = async (req, res) => {
             },
         });
         // Respond immediately as in other auth flows; email is sent in background.
-        (0, mailer_1.sendPasswordResetCodeEmail)(email, code).catch((err) => {
+        (0, mailer_1.sendPasswordResetCodeEmail)(email, code, preferredLanguage).catch((err) => {
             console.error("recovery fallback sendPasswordResetCodeEmail error", err);
         });
         return res.status(200).json({ ok: true, emailOnly: true });
@@ -145,8 +148,8 @@ const recoveryRequest = async (req, res) => {
             userAgent: String(req.headers["user-agent"] || "").slice(0, 500),
         },
     });
-    (0, mailer_1.sendPasswordResetCodeEmail)(email, emailCode).catch(() => console.error("recovery email error"));
-    (0, sms_1.sendSms)(user.phone, `Your Ground recovery code is: ${phoneCode}. It expires in 15 minutes.`).catch(() => console.error("recovery sms error"));
+    (0, mailer_1.sendPasswordResetCodeEmail)(email, emailCode, preferredLanguage).catch(() => console.error("recovery email error"));
+    (0, sms_1.sendSms)(user.phone, (0, authMessages_1.buildRecoverySms)(phoneCode, 15, preferredLanguage)).catch(() => console.error("recovery sms error"));
     return res.status(200).json({ ok: true });
 };
 exports.recoveryRequest = recoveryRequest;

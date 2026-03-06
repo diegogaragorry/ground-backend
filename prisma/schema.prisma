@@ -27,6 +27,7 @@ model User {
   firstName                 String?
   lastName                  String?
   country                   String?
+  preferredLanguage         String?  // "es" | "en" — idioma preferido para UI y mensajes transaccionales
   role                      UserRole @default(USER)
   createdAt                 DateTime @default(now())
   forceOnboardingNextLogin  Boolean  @default(false)

@@ -64,7 +64,7 @@ app.use((req, res, next) => {
         if (origin)
             res.setHeader("Access-Control-Allow-Origin", origin);
         res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+        res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-App-Language");
         res.setHeader("Access-Control-Max-Age", "86400");
         res.status(204).end();
         return;
@@ -81,7 +81,7 @@ app.use((0, cors_1.default)({
         }
     },
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "X-App-Language"],
     credentials: true,
     optionsSuccessStatus: 204,
 }));

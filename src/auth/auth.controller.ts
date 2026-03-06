@@ -7,6 +7,12 @@ import type { AuthRequest } from "../middlewares/requireAuth";
 import { bootstrapUserData } from "./bootstrapUserData";
 import { decryptRecoveryPackage, encryptRecoveryPackage } from "../lib/recoveryCrypto";
 import { sendSignupCodeEmail, sendPasswordResetCodeEmail } from "../lib/mailer";
+import { buildVerificationSms } from "../lib/authMessages";
+import {
+  getRequestPreferredLanguage,
+  normalizePreferredLanguage,
+  resolvePreferredLanguage,
+} from "../lib/preferredLanguage";
 import { sendSms } from "../lib/sms";
 
 function normalizeEmail(email: string) {
@@ -78,6 +84,7 @@ export const registerRequestCode = async (req: Request, res: Response) => {
   try {
     const email = normalizeEmail(req.body?.email);
     const profile = parseRegistrationProfile(req.body);
+    const preferredLanguage = resolvePreferredLanguage(getRequestPreferredLanguage(req));
 
     if (!email) return res.status(400).json({ error: "email is required" });
     if ("error" in profile) return res.status(400).json({ error: profile.error });
@@ -137,7 +144,7 @@ export const registerRequestCode = async (req: Request, res: Response) => {
     ]);
 
     try {
-      await sendSms(profile.phone, `Your Ground verification code is: ${phoneCode}. It expires in 20 minutes.`);
+      await sendSms(profile.phone, buildVerificationSms(phoneCode, 20, preferredLanguage));
     } catch (smsErr) {
       await prisma.emailVerificationCode.deleteMany({
         where: { id: { in: [emailRow.id, phoneRow.id] } },
@@ -148,7 +155,7 @@ export const registerRequestCode = async (req: Request, res: Response) => {
     }
 
     // Email can remain async once the blocking SMS path succeeded.
-    sendSignupCodeEmail(email, code).catch((err) => {
+    sendSignupCodeEmail(email, code, preferredLanguage).catch((err) => {
       console.error("sendSignupCodeEmail background error");
     });
 
@@ -174,6 +181,7 @@ export const registerVerify = async (req: Request, res: Response) => {
   const password = String(req.body?.password || "");
   const recoveryPackage = typeof req.body?.recoveryPackage === "string" ? String(req.body.recoveryPackage).trim() : "";
   const profile = parseRegistrationProfile(req.body);
+  const preferredLanguage = resolvePreferredLanguage(getRequestPreferredLanguage(req));
 
   if (!email || !emailCode || !phoneCode || !password || !recoveryPackage) {
     return res.status(400).json({ error: "email, emailCode, phoneCode, password and recoveryPackage are required" });
@@ -275,6 +283,7 @@ export const registerVerify = async (req: Request, res: Response) => {
         firstName: profile.firstName,
         lastName: profile.lastName,
         country: profile.country,
+        preferredLanguage,
         phone: profile.phone,
         phoneVerifiedAt: now,
         role: "USER",
@@ -318,6 +327,7 @@ export const registerVerify = async (req: Request, res: Response) => {
         firstName: true,
         lastName: true,
         country: true,
+        preferredLanguage: true,
         phone: true,
         role: true,
         encryptionSalt: true,
@@ -333,6 +343,7 @@ export const registerVerify = async (req: Request, res: Response) => {
         firstName: created!.firstName ?? undefined,
         lastName: created!.lastName ?? undefined,
         country: created!.country ?? undefined,
+        preferredLanguage: created!.preferredLanguage ?? undefined,
         phone: created!.phone ?? undefined,
         role: created!.role,
         encryptionSalt: created!.encryptionSalt ?? undefined,
@@ -360,6 +371,7 @@ export const forgotPasswordRequestCode = async (req: Request, res: Response) => 
 
     const user = await prisma.user.findUnique({ where: { email } });
     if (!user) return res.status(404).json({ error: "No account found with this email" });
+    const preferredLanguage = resolvePreferredLanguage(user.preferredLanguage, getRequestPreferredLanguage(req));
 
     const purpose = "password_reset";
     const ip = getClientIp(req);
@@ -392,7 +404,7 @@ export const forgotPasswordRequestCode = async (req: Request, res: Response) => 
     });
 
     // Responder al instante; enviar email en segundo plano
-    sendPasswordResetCodeEmail(email, code).catch((err) => {
+    sendPasswordResetCodeEmail(email, code, preferredLanguage).catch((err) => {
       console.error("sendPasswordResetCodeEmail background error");
     });
 
@@ -494,6 +506,7 @@ export const login = async (req: Request, res: Response) => {
       firstName: true,
       lastName: true,
       country: true,
+      preferredLanguage: true,
       role: true,
       password: true,
       encryptionSalt: true,
@@ -548,6 +561,7 @@ export const login = async (req: Request, res: Response) => {
         firstName: user.firstName ?? undefined,
         lastName: user.lastName ?? undefined,
         country: user.country ?? undefined,
+        preferredLanguage: user.preferredLanguage ?? undefined,
         phone: user.phone ?? undefined,
         role: user.role,
         encryptionSalt: encryptionSalt ?? undefined,
@@ -579,6 +593,7 @@ export const me = async (req: AuthRequest, res: Response) => {
       firstName: true,
       lastName: true,
       country: true,
+      preferredLanguage: true,
       role: true,
       createdAt: true,
       forceOnboardingNextLogin: true,
@@ -611,6 +626,7 @@ export const patchMe = async (req: AuthRequest, res: Response) => {
     firstName?: string | null;
     lastName?: string | null;
     country?: string | null;
+    preferredLanguage?: string | null;
     forceOnboardingNextLogin?: boolean;
     onboardingStep?: string;
     mobileWarningDismissed?: boolean;
@@ -620,6 +636,7 @@ export const patchMe = async (req: AuthRequest, res: Response) => {
     firstName?: string | null;
     lastName?: string | null;
     country?: string | null;
+    preferredLanguage?: "es" | "en" | null;
     forceOnboardingNextLogin?: boolean;
     onboardingStep?: string;
     mobileWarningDismissed?: boolean;
@@ -639,6 +656,15 @@ export const patchMe = async (req: AuthRequest, res: Response) => {
     const v = normalizeCountry(body.country);
     if (!v || v.length < 2) return res.status(400).json({ error: "country is required" });
     data.country = v.slice(0, 80);
+  }
+  if (body?.preferredLanguage !== undefined) {
+    if (body.preferredLanguage == null || String(body.preferredLanguage).trim() === "") {
+      data.preferredLanguage = null;
+    } else {
+      const v = normalizePreferredLanguage(body.preferredLanguage);
+      if (!v) return res.status(400).json({ error: "preferredLanguage must be es or en" });
+      data.preferredLanguage = v;
+    }
   }
   if (body?.forceOnboardingNextLogin === false) {
     data.forceOnboardingNextLogin = false;
@@ -681,6 +707,10 @@ export const phoneRequest = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
   const raw = String(req.body?.phone ?? "").trim();
   const phone = normalizePhone(raw) || raw.replace(/\s/g, "");
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { preferredLanguage: true },
+  });
   if (!phone || phone.length < 10) {
     return res.status(400).json({ error: "Valid phone number is required" });
   }
@@ -702,7 +732,7 @@ export const phoneRequest = async (req: AuthRequest, res: Response) => {
     data: { userId, phone, codeHash, expiresAt },
   });
 
-  sendSms(phone, `Your Ground verification code is: ${code}. It expires in 15 minutes.`).catch((err) => {
+  sendSms(phone, buildVerificationSms(code, 15, user?.preferredLanguage)).catch((err) => {
     console.error("sendSms error");
   });
 

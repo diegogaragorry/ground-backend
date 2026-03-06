@@ -6,6 +6,8 @@ import { prisma } from "../lib/prisma";
 import type { AuthRequest } from "../middlewares/requireAuth";
 import { encryptRecoveryPackage, decryptRecoveryPackage } from "../lib/recoveryCrypto";
 import { sendPasswordResetCodeEmail } from "../lib/mailer";
+import { buildRecoverySms } from "../lib/authMessages";
+import { getRequestPreferredLanguage, resolvePreferredLanguage } from "../lib/preferredLanguage";
 import { sendSms } from "../lib/sms";
 
 function normalizeEmail(email: string) {
@@ -84,8 +86,9 @@ export const recoveryRequest = async (req: Request, res: Response) => {
 
   const user = await prisma.user.findUnique({
     where: { email },
-    select: { id: true, phone: true, encryptedRecoveryPackage: true, phoneVerifiedAt: true },
+    select: { id: true, phone: true, encryptedRecoveryPackage: true, phoneVerifiedAt: true, preferredLanguage: true },
   });
+  const preferredLanguage = resolvePreferredLanguage(user?.preferredLanguage, getRequestPreferredLanguage(req));
 
   // User doesn't exist: generic response to avoid leaking
   if (!user) return res.status(200).json({ ok: true });
@@ -122,7 +125,7 @@ export const recoveryRequest = async (req: Request, res: Response) => {
       },
     });
     // Respond immediately as in other auth flows; email is sent in background.
-    sendPasswordResetCodeEmail(email, code).catch((err) => {
+    sendPasswordResetCodeEmail(email, code, preferredLanguage).catch((err) => {
       console.error("recovery fallback sendPasswordResetCodeEmail error", err);
     });
     return res.status(200).json({ ok: true, emailOnly: true });
@@ -151,8 +154,8 @@ export const recoveryRequest = async (req: Request, res: Response) => {
     },
   });
 
-  sendPasswordResetCodeEmail(email, emailCode).catch(() => console.error("recovery email error"));
-  sendSms(user.phone, `Your Ground recovery code is: ${phoneCode}. It expires in 15 minutes.`).catch(() =>
+  sendPasswordResetCodeEmail(email, emailCode, preferredLanguage).catch(() => console.error("recovery email error"));
+  sendSms(user.phone, buildRecoverySms(phoneCode, 15, preferredLanguage)).catch(() =>
     console.error("recovery sms error")
   );
 
