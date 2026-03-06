@@ -11,9 +11,25 @@ const dns_1 = __importDefault(require("dns"));
 // Railway puede no tener IPv6; forzar IPv4 para SMTP (Gmail)
 dns_1.default.setDefaultResultOrder("ipv4first");
 const app_1 = __importDefault(require("./app"));
+const prisma_1 = require("./lib/prisma");
 const PORT = Number(process.env.PORT) || 3000;
-// Sin host para enlazar todas las interfaces (IPv4 + IPv6); Railway puede conectar por IPv6.
-app_1.default.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`Backend URL: http://localhost:${PORT}`);
+async function ensureRuntimeSchema() {
+    // Compatibilidad de despliegue: si Railway levantó el código antes de correr Prisma migrate,
+    // agregamos la columna nueva para evitar que el backend quede caído por rollout parcial.
+    await prisma_1.prisma.$executeRawUnsafe(`
+    ALTER TABLE "User"
+    ADD COLUMN IF NOT EXISTS "preferredLanguage" TEXT
+  `);
+}
+async function start() {
+    await ensureRuntimeSchema();
+    // Sin host para enlazar todas las interfaces (IPv4 + IPv6); Railway puede conectar por IPv6.
+    app_1.default.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+        console.log(`Backend URL: http://localhost:${PORT}`);
+    });
+}
+start().catch((err) => {
+    console.error("Startup error:", err);
+    process.exit(1);
 });

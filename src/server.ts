@@ -10,11 +10,30 @@ import dns from "dns";
 dns.setDefaultResultOrder("ipv4first");
 
 import app from "./app";
+import { prisma } from "./lib/prisma";
 
 const PORT = Number(process.env.PORT) || 3000;
 
-// Sin host para enlazar todas las interfaces (IPv4 + IPv6); Railway puede conectar por IPv6.
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Backend URL: http://localhost:${PORT}`);
+async function ensureRuntimeSchema() {
+  // Compatibilidad de despliegue: si Railway levantó el código antes de correr Prisma migrate,
+  // agregamos la columna nueva para evitar que el backend quede caído por rollout parcial.
+  await prisma.$executeRawUnsafe(`
+    ALTER TABLE "User"
+    ADD COLUMN IF NOT EXISTS "preferredLanguage" TEXT
+  `);
+}
+
+async function start() {
+  await ensureRuntimeSchema();
+
+  // Sin host para enlazar todas las interfaces (IPv4 + IPv6); Railway puede conectar por IPv6.
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log(`Backend URL: http://localhost:${PORT}`);
+  });
+}
+
+start().catch((err) => {
+  console.error("Startup error:", err);
+  process.exit(1);
 });
