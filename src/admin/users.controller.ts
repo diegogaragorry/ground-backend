@@ -18,7 +18,7 @@ function validatePassword(pw: any) {
 // GET /admin/users (SUPER_ADMIN)
 export const listUsers = async (req: AuthRequest, res: Response) => {
   const rows = await prisma.user.findMany({
-    orderBy: { createdAt: "asc" },
+    orderBy: { createdAt: "desc" },
     select: { id: true, email: true, role: true, createdAt: true },
   });
   res.json({ rows });
@@ -26,11 +26,28 @@ export const listUsers = async (req: AuthRequest, res: Response) => {
 
 const RECENT_USERS_LIMIT = 25;
 const RECENT_CODES_LIMIT = 40;
-const RECENT_LOGINS_LIMIT = 20;
+const RECENT_CODES_FETCH_LIMIT = 120;
+const RECENT_LOGINS_LIMIT = 10;
+const RECENT_LOGINS_FETCH_LIMIT = 80;
+
+const EXCLUDED_ACTIVITY_EMAILS = new Set([
+  "diego.garagorry@gmail.com",
+  "iturgara@gmail.com",
+]);
+
+function normalizeActivityEmail(email: string | null | undefined) {
+  return String(email ?? "").trim().toLowerCase();
+}
+
+function isExcludedActivityEmail(email: string | null | undefined) {
+  const normalized = normalizeActivityEmail(email);
+  if (!normalized) return false;
+  return EXCLUDED_ACTIVITY_EMAILS.has(normalized) || normalized.endsWith("@test.com");
+}
 
 // GET /admin/recent-activity (SUPER_ADMIN) — últimos usuarios, códigos de verificación y últimos ingresos a la app
 export const getRecentActivity = async (req: AuthRequest, res: Response) => {
-  const [recentUsers, recentCodes, recentLogins] = await Promise.all([
+  const [recentUsers, recentCodesRaw, recentLoginsRaw] = await Promise.all([
     prisma.user.findMany({
       orderBy: { createdAt: "desc" },
       take: RECENT_USERS_LIMIT,
@@ -38,7 +55,7 @@ export const getRecentActivity = async (req: AuthRequest, res: Response) => {
     }),
     prisma.emailVerificationCode.findMany({
       orderBy: { createdAt: "desc" },
-      take: RECENT_CODES_LIMIT,
+      take: RECENT_CODES_FETCH_LIMIT,
       select: {
         id: true,
         email: true,
@@ -51,7 +68,7 @@ export const getRecentActivity = async (req: AuthRequest, res: Response) => {
     }),
     prisma.loginLog.findMany({
       orderBy: { loggedAt: "desc" },
-      take: RECENT_LOGINS_LIMIT,
+      take: RECENT_LOGINS_FETCH_LIMIT,
       select: {
         id: true,
         userId: true,
@@ -64,19 +81,25 @@ export const getRecentActivity = async (req: AuthRequest, res: Response) => {
   ]);
 
   const now = new Date();
-  const codesWithStatus = recentCodes.map((c) => ({
-    ...c,
-    status: c.usedAt ? "used" : c.expiresAt <= now ? "expired" : "pending",
-  }));
+  const codesWithStatus = recentCodesRaw
+    .filter((c) => !isExcludedActivityEmail(c.email))
+    .slice(0, RECENT_CODES_LIMIT)
+    .map((c) => ({
+      ...c,
+      status: c.usedAt ? "used" : c.expiresAt <= now ? "expired" : "pending",
+    }));
 
-  const recentLoginsFlat = recentLogins.map((l) => ({
-    id: l.id,
-    userId: l.userId,
-    email: l.user.email,
-    loggedAt: l.loggedAt,
-    ip: l.ip,
-    userAgent: l.userAgent,
-  }));
+  const recentLoginsFlat = recentLoginsRaw
+    .filter((l) => !isExcludedActivityEmail(l.user.email))
+    .slice(0, RECENT_LOGINS_LIMIT)
+    .map((l) => ({
+      id: l.id,
+      userId: l.userId,
+      email: l.user.email,
+      loggedAt: l.loggedAt,
+      ip: l.ip,
+      userAgent: l.userAgent,
+    }));
 
   res.json({
     recentUsers,
