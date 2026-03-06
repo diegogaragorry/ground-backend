@@ -5,7 +5,7 @@ import crypto from "crypto";
 import { prisma } from "../lib/prisma";
 import type { AuthRequest } from "../middlewares/requireAuth";
 import { bootstrapUserData } from "./bootstrapUserData";
-import { decryptRecoveryPackage } from "../lib/recoveryCrypto";
+import { decryptRecoveryPackage, encryptRecoveryPackage } from "../lib/recoveryCrypto";
 import { sendSignupCodeEmail, sendPasswordResetCodeEmail } from "../lib/mailer";
 import { sendSms } from "../lib/sms";
 
@@ -33,6 +33,11 @@ function hashCode(email: string, code: string) {
 function hashPhoneCode(userId: string, phone: string, code: string) {
   const pepper = process.env.OTP_PEPPER || "dev_pepper_change_me";
   return crypto.createHash("sha256").update(`${pepper}:phone:${userId}:${phone}:${code}`).digest("hex");
+}
+
+function hashSignupPhoneCode(email: string, phone: string, code: string) {
+  const pepper = process.env.OTP_PEPPER || "dev_pepper_change_me";
+  return crypto.createHash("sha256").update(`${pepper}:signup_phone:${email}:${phone}:${code}`).digest("hex");
 }
 
 function getClientIp(req: Request) {
@@ -104,20 +109,45 @@ export const registerRequestCode = async (req: Request, res: Response) => {
 
     const code = gen6();
     const codeHash = hashCode(email, code);
+    const phoneCode = gen6();
+    const phoneCodeHash = hashSignupPhoneCode(email, profile.phone, phoneCode);
     const expiresAt = new Date(Date.now() + 20 * 60 * 1000); // 20 min
 
-    await prisma.emailVerificationCode.create({
-      data: {
-        email,
-        codeHash,
-        purpose,
-        expiresAt,
-        ip: ip ?? undefined,
-        userAgent,
-      },
-    });
+    const [emailRow, phoneRow] = await prisma.$transaction([
+      prisma.emailVerificationCode.create({
+        data: {
+          email,
+          codeHash,
+          purpose,
+          expiresAt,
+          ip: ip ?? undefined,
+          userAgent,
+        },
+      }),
+      prisma.emailVerificationCode.create({
+        data: {
+          email,
+          codeHash: phoneCodeHash,
+          purpose: "signup_phone",
+          expiresAt,
+          ip: ip ?? undefined,
+          userAgent,
+        },
+      }),
+    ]);
 
-    // Responder al instante; enviar email en segundo plano (evita 1–2 min de "Sending...")
+    try {
+      await sendSms(profile.phone, `Your Ground verification code is: ${phoneCode}. It expires in 20 minutes.`);
+    } catch (smsErr) {
+      await prisma.emailVerificationCode.deleteMany({
+        where: { id: { in: [emailRow.id, phoneRow.id] } },
+      });
+      const message = smsErr instanceof Error ? smsErr.message : String(smsErr);
+      console.error("registerRequestCode sendSms error");
+      return res.status(503).json({ error: "Could not send phone verification code", detail: message });
+    }
+
+    // Email can remain async once the blocking SMS path succeeded.
     sendSignupCodeEmail(email, code).catch((err) => {
       console.error("sendSignupCodeEmail background error");
     });
@@ -135,16 +165,18 @@ export const registerRequestCode = async (req: Request, res: Response) => {
 
 /**
  * POST /auth/register/verify
- * Body: { email, code, password, firstName, lastName, phone, country }
+ * Body: { email, code|emailCode, phoneCode, password, firstName, lastName, phone, country, recoveryPackage }
  */
 export const registerVerify = async (req: Request, res: Response) => {
   const email = normalizeEmail(req.body?.email);
-  const code = String(req.body?.code || "").trim();
+  const emailCode = String(req.body?.emailCode ?? req.body?.code ?? "").trim();
+  const phoneCode = String(req.body?.phoneCode ?? req.body?.phone_code ?? "").trim();
   const password = String(req.body?.password || "");
+  const recoveryPackage = typeof req.body?.recoveryPackage === "string" ? String(req.body.recoveryPackage).trim() : "";
   const profile = parseRegistrationProfile(req.body);
 
-  if (!email || !code || !password) {
-    return res.status(400).json({ error: "email, code and password are required" });
+  if (!email || !emailCode || !phoneCode || !password || !recoveryPackage) {
+    return res.status(400).json({ error: "email, emailCode, phoneCode, password and recoveryPackage are required" });
   }
   if ("error" in profile) {
     return res.status(400).json({ error: profile.error });
@@ -160,38 +192,77 @@ export const registerVerify = async (req: Request, res: Response) => {
   const purpose = "signup";
   const now = new Date();
 
-  const latest = await prisma.emailVerificationCode.findFirst({
-    where: { email, purpose },
-    orderBy: { createdAt: "desc" },
-  });
+  const [latestEmail, latestPhone] = await Promise.all([
+    prisma.emailVerificationCode.findFirst({
+      where: { email, purpose },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.emailVerificationCode.findFirst({
+      where: { email, purpose: "signup_phone" },
+      orderBy: { createdAt: "desc" },
+    }),
+  ]);
 
-  if (!latest || latest.usedAt || latest.expiresAt <= now) {
-    return res.status(400).json({ error: "Invalid or expired code" });
+  if (!latestEmail || latestEmail.usedAt || latestEmail.expiresAt <= now) {
+    return res.status(400).json({ error: "Invalid or expired email code" });
+  }
+  if (!latestPhone || latestPhone.usedAt || latestPhone.expiresAt <= now) {
+    return res.status(400).json({ error: "Invalid or expired phone code" });
   }
 
-  if ((latest.attempts ?? 0) >= 5) {
+  if ((latestEmail.attempts ?? 0) >= 5 || (latestPhone.attempts ?? 0) >= 5) {
     return res.status(429).json({ error: "Too many attempts. Request a new code." });
   }
 
-  const expectedHash = hashCode(email, code);
+  const expectedEmailHash = hashCode(email, emailCode);
+  const emailA = Buffer.from(expectedEmailHash);
+  const emailB = Buffer.from(latestEmail.codeHash);
+  const emailOk = emailA.length === emailB.length && crypto.timingSafeEqual(emailA, emailB);
 
-  // timingSafeEqual requiere mismos tamaños
-  const a = Buffer.from(expectedHash);
-  const b = Buffer.from(latest.codeHash);
-  const ok = a.length === b.length && crypto.timingSafeEqual(a, b);
+  const expectedPhoneHash = hashSignupPhoneCode(email, profile.phone, phoneCode);
+  const phoneA = Buffer.from(expectedPhoneHash);
+  const phoneB = Buffer.from(latestPhone.codeHash);
+  const phoneOk = phoneA.length === phoneB.length && crypto.timingSafeEqual(phoneA, phoneB);
 
-  if (!ok) {
-    await prisma.emailVerificationCode.update({
-      where: { id: latest.id },
-      data: { attempts: { increment: 1 } },
-    });
-    return res.status(400).json({ error: "Invalid or expired code" });
+  if (!emailOk || !phoneOk) {
+    await prisma.$transaction([
+      ...(!emailOk
+        ? [prisma.emailVerificationCode.update({
+            where: { id: latestEmail.id },
+            data: { attempts: { increment: 1 } },
+          })]
+        : []),
+      ...(!phoneOk
+        ? [prisma.emailVerificationCode.update({
+            where: { id: latestPhone.id },
+            data: { attempts: { increment: 1 } },
+          })]
+        : []),
+    ]);
+    return res.status(400).json({ error: !emailOk ? "Invalid or expired email code" : "Invalid or expired phone code" });
   }
 
-  await prisma.emailVerificationCode.update({
-    where: { id: latest.id },
-    data: { usedAt: now },
-  });
+  let encryptedRecoveryPackage: string;
+  try {
+    encryptedRecoveryPackage = encryptRecoveryPackage(recoveryPackage);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("SERVER_RECOVERY_KEY") || message.includes("32 bytes")) {
+      return res.status(500).json({ error: "Recovery not configured" });
+    }
+    return res.status(400).json({ error: "Invalid recovery package" });
+  }
+
+  await prisma.$transaction([
+    prisma.emailVerificationCode.update({
+      where: { id: latestEmail.id },
+      data: { usedAt: now },
+    }),
+    prisma.emailVerificationCode.update({
+      where: { id: latestPhone.id },
+      data: { usedAt: now },
+    }),
+  ]);
 
   const hashedPassword = await bcrypt.hash(password, 10);
   const encryptionSalt = typeof req.body?.encryptionSalt === "string" ? String(req.body.encryptionSalt).trim() || undefined : undefined;
@@ -205,8 +276,10 @@ export const registerVerify = async (req: Request, res: Response) => {
         lastName: profile.lastName,
         country: profile.country,
         phone: profile.phone,
+        phoneVerifiedAt: now,
         role: "USER",
         encryptionSalt: encryptionSalt || undefined,
+        encryptedRecoveryPackage,
       },
     });
 

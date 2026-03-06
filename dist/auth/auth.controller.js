@@ -15,6 +15,12 @@ const sms_1 = require("../lib/sms");
 function normalizeEmail(email) {
     return String(email || "").trim().toLowerCase();
 }
+function normalizeName(value) {
+    return String(value ?? "").trim().replace(/\s+/g, " ");
+}
+function normalizeCountry(value) {
+    return String(value ?? "").trim().replace(/\s+/g, " ");
+}
 function gen6() {
     return String(Math.floor(100000 + Math.random() * 900000));
 }
@@ -26,6 +32,10 @@ function hashPhoneCode(userId, phone, code) {
     const pepper = process.env.OTP_PEPPER || "dev_pepper_change_me";
     return crypto_1.default.createHash("sha256").update(`${pepper}:phone:${userId}:${phone}:${code}`).digest("hex");
 }
+function hashSignupPhoneCode(email, phone, code) {
+    const pepper = process.env.OTP_PEPPER || "dev_pepper_change_me";
+    return crypto_1.default.createHash("sha256").update(`${pepper}:signup_phone:${email}:${phone}:${code}`).digest("hex");
+}
 function getClientIp(req) {
     const xf = req.headers["x-forwarded-for"] || "";
     const first = xf.split(",")[0]?.trim();
@@ -34,15 +44,39 @@ function getClientIp(req) {
 function getUserAgent(req) {
     return String(req.headers["user-agent"] || "").slice(0, 400);
 }
+function parseRegistrationProfile(body) {
+    const firstName = normalizeName(body?.firstName);
+    const lastName = normalizeName(body?.lastName);
+    const country = normalizeCountry(body?.country);
+    const rawPhone = String(body?.phone ?? "").trim();
+    const phone = normalizePhone(rawPhone) || rawPhone.replace(/\s/g, "");
+    if (!firstName || firstName.length < 2)
+        return { error: "firstName is required" };
+    if (!lastName || lastName.length < 2)
+        return { error: "lastName is required" };
+    if (!country || country.length < 2)
+        return { error: "country is required" };
+    if (!phone || phone.length < 10)
+        return { error: "Valid phone number is required" };
+    return {
+        firstName: firstName.slice(0, 80),
+        lastName: lastName.slice(0, 80),
+        country: country.slice(0, 80),
+        phone: phone.slice(0, 32),
+    };
+}
 /**
  * POST /auth/register/request-code
- * Body: { email }
+ * Body: { email, firstName, lastName, phone, country }
  */
 const registerRequestCode = async (req, res) => {
     try {
         const email = normalizeEmail(req.body?.email);
+        const profile = parseRegistrationProfile(req.body);
         if (!email)
             return res.status(400).json({ error: "email is required" });
+        if ("error" in profile)
+            return res.status(400).json({ error: profile.error });
         const existingUser = await prisma_1.prisma.user.findUnique({ where: { email } });
         if (existingUser)
             return res.status(409).json({ error: "User already exists" });
@@ -67,18 +101,43 @@ const registerRequestCode = async (req, res) => {
         }
         const code = gen6();
         const codeHash = hashCode(email, code);
+        const phoneCode = gen6();
+        const phoneCodeHash = hashSignupPhoneCode(email, profile.phone, phoneCode);
         const expiresAt = new Date(Date.now() + 20 * 60 * 1000); // 20 min
-        await prisma_1.prisma.emailVerificationCode.create({
-            data: {
-                email,
-                codeHash,
-                purpose,
-                expiresAt,
-                ip: ip ?? undefined,
-                userAgent,
-            },
-        });
-        // Responder al instante; enviar email en segundo plano (evita 1–2 min de "Sending...")
+        const [emailRow, phoneRow] = await prisma_1.prisma.$transaction([
+            prisma_1.prisma.emailVerificationCode.create({
+                data: {
+                    email,
+                    codeHash,
+                    purpose,
+                    expiresAt,
+                    ip: ip ?? undefined,
+                    userAgent,
+                },
+            }),
+            prisma_1.prisma.emailVerificationCode.create({
+                data: {
+                    email,
+                    codeHash: phoneCodeHash,
+                    purpose: "signup_phone",
+                    expiresAt,
+                    ip: ip ?? undefined,
+                    userAgent,
+                },
+            }),
+        ]);
+        try {
+            await (0, sms_1.sendSms)(profile.phone, `Your Ground verification code is: ${phoneCode}. It expires in 20 minutes.`);
+        }
+        catch (smsErr) {
+            await prisma_1.prisma.emailVerificationCode.deleteMany({
+                where: { id: { in: [emailRow.id, phoneRow.id] } },
+            });
+            const message = smsErr instanceof Error ? smsErr.message : String(smsErr);
+            console.error("registerRequestCode sendSms error");
+            return res.status(503).json({ error: "Could not send phone verification code", detail: message });
+        }
+        // Email can remain async once the blocking SMS path succeeded.
         (0, mailer_1.sendSignupCodeEmail)(email, code).catch((err) => {
             console.error("sendSignupCodeEmail background error");
         });
@@ -96,14 +155,20 @@ const registerRequestCode = async (req, res) => {
 exports.registerRequestCode = registerRequestCode;
 /**
  * POST /auth/register/verify
- * Body: { email, code, password }
+ * Body: { email, code|emailCode, phoneCode, password, firstName, lastName, phone, country, recoveryPackage }
  */
 const registerVerify = async (req, res) => {
     const email = normalizeEmail(req.body?.email);
-    const code = String(req.body?.code || "").trim();
+    const emailCode = String(req.body?.emailCode ?? req.body?.code ?? "").trim();
+    const phoneCode = String(req.body?.phoneCode ?? req.body?.phone_code ?? "").trim();
     const password = String(req.body?.password || "");
-    if (!email || !code || !password) {
-        return res.status(400).json({ error: "email, code and password are required" });
+    const recoveryPackage = typeof req.body?.recoveryPackage === "string" ? String(req.body.recoveryPackage).trim() : "";
+    const profile = parseRegistrationProfile(req.body);
+    if (!email || !emailCode || !phoneCode || !password || !recoveryPackage) {
+        return res.status(400).json({ error: "email, emailCode, phoneCode, password and recoveryPackage are required" });
+    }
+    if ("error" in profile) {
+        return res.status(400).json({ error: profile.error });
     }
     if (password.length < 8) {
         return res.status(400).json({ error: "password must be at least 8 characters" });
@@ -113,37 +178,87 @@ const registerVerify = async (req, res) => {
         return res.status(409).json({ error: "User already exists" });
     const purpose = "signup";
     const now = new Date();
-    const latest = await prisma_1.prisma.emailVerificationCode.findFirst({
-        where: { email, purpose },
-        orderBy: { createdAt: "desc" },
-    });
-    if (!latest || latest.usedAt || latest.expiresAt <= now) {
-        return res.status(400).json({ error: "Invalid or expired code" });
+    const [latestEmail, latestPhone] = await Promise.all([
+        prisma_1.prisma.emailVerificationCode.findFirst({
+            where: { email, purpose },
+            orderBy: { createdAt: "desc" },
+        }),
+        prisma_1.prisma.emailVerificationCode.findFirst({
+            where: { email, purpose: "signup_phone" },
+            orderBy: { createdAt: "desc" },
+        }),
+    ]);
+    if (!latestEmail || latestEmail.usedAt || latestEmail.expiresAt <= now) {
+        return res.status(400).json({ error: "Invalid or expired email code" });
     }
-    if ((latest.attempts ?? 0) >= 5) {
+    if (!latestPhone || latestPhone.usedAt || latestPhone.expiresAt <= now) {
+        return res.status(400).json({ error: "Invalid or expired phone code" });
+    }
+    if ((latestEmail.attempts ?? 0) >= 5 || (latestPhone.attempts ?? 0) >= 5) {
         return res.status(429).json({ error: "Too many attempts. Request a new code." });
     }
-    const expectedHash = hashCode(email, code);
-    // timingSafeEqual requiere mismos tamaños
-    const a = Buffer.from(expectedHash);
-    const b = Buffer.from(latest.codeHash);
-    const ok = a.length === b.length && crypto_1.default.timingSafeEqual(a, b);
-    if (!ok) {
-        await prisma_1.prisma.emailVerificationCode.update({
-            where: { id: latest.id },
-            data: { attempts: { increment: 1 } },
-        });
-        return res.status(400).json({ error: "Invalid or expired code" });
+    const expectedEmailHash = hashCode(email, emailCode);
+    const emailA = Buffer.from(expectedEmailHash);
+    const emailB = Buffer.from(latestEmail.codeHash);
+    const emailOk = emailA.length === emailB.length && crypto_1.default.timingSafeEqual(emailA, emailB);
+    const expectedPhoneHash = hashSignupPhoneCode(email, profile.phone, phoneCode);
+    const phoneA = Buffer.from(expectedPhoneHash);
+    const phoneB = Buffer.from(latestPhone.codeHash);
+    const phoneOk = phoneA.length === phoneB.length && crypto_1.default.timingSafeEqual(phoneA, phoneB);
+    if (!emailOk || !phoneOk) {
+        await prisma_1.prisma.$transaction([
+            ...(!emailOk
+                ? [prisma_1.prisma.emailVerificationCode.update({
+                        where: { id: latestEmail.id },
+                        data: { attempts: { increment: 1 } },
+                    })]
+                : []),
+            ...(!phoneOk
+                ? [prisma_1.prisma.emailVerificationCode.update({
+                        where: { id: latestPhone.id },
+                        data: { attempts: { increment: 1 } },
+                    })]
+                : []),
+        ]);
+        return res.status(400).json({ error: !emailOk ? "Invalid or expired email code" : "Invalid or expired phone code" });
     }
-    await prisma_1.prisma.emailVerificationCode.update({
-        where: { id: latest.id },
-        data: { usedAt: now },
-    });
+    let encryptedRecoveryPackage;
+    try {
+        encryptedRecoveryPackage = (0, recoveryCrypto_1.encryptRecoveryPackage)(recoveryPackage);
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes("SERVER_RECOVERY_KEY") || message.includes("32 bytes")) {
+            return res.status(500).json({ error: "Recovery not configured" });
+        }
+        return res.status(400).json({ error: "Invalid recovery package" });
+    }
+    await prisma_1.prisma.$transaction([
+        prisma_1.prisma.emailVerificationCode.update({
+            where: { id: latestEmail.id },
+            data: { usedAt: now },
+        }),
+        prisma_1.prisma.emailVerificationCode.update({
+            where: { id: latestPhone.id },
+            data: { usedAt: now },
+        }),
+    ]);
     const hashedPassword = await bcrypt_1.default.hash(password, 10);
     const encryptionSalt = typeof req.body?.encryptionSalt === "string" ? String(req.body.encryptionSalt).trim() || undefined : undefined;
     try {
         const user = await prisma_1.prisma.user.create({
-            data: { email, password: hashedPassword, role: "USER", encryptionSalt: encryptionSalt || undefined },
+            data: {
+                email,
+                password: hashedPassword,
+                firstName: profile.firstName,
+                lastName: profile.lastName,
+                country: profile.country,
+                phone: profile.phone,
+                phoneVerifiedAt: now,
+                role: "USER",
+                encryptionSalt: encryptionSalt || undefined,
+                encryptedRecoveryPackage,
+            },
         });
         await (0, bootstrapUserData_1.bootstrapUserData)(user.id);
         await prisma_1.prisma.investment.create({
@@ -170,13 +285,28 @@ const registerVerify = async (req, res) => {
         const token = jsonwebtoken_1.default.sign({ userId: user.id }, process.env.JWT_SECRET, { expiresIn: "1d" });
         const created = await prisma_1.prisma.user.findUnique({
             where: { id: user.id },
-            select: { id: true, email: true, role: true, encryptionSalt: true, encryptedRecoveryPackage: true, phoneVerifiedAt: true },
+            select: {
+                id: true,
+                email: true,
+                firstName: true,
+                lastName: true,
+                country: true,
+                phone: true,
+                role: true,
+                encryptionSalt: true,
+                encryptedRecoveryPackage: true,
+                phoneVerifiedAt: true,
+            },
         });
         return res.status(201).json({
             token,
             user: {
                 id: created.id,
                 email: created.email,
+                firstName: created.firstName ?? undefined,
+                lastName: created.lastName ?? undefined,
+                country: created.country ?? undefined,
+                phone: created.phone ?? undefined,
                 role: created.role,
                 encryptionSalt: created.encryptionSalt ?? undefined,
                 recoveryEnabled: !!(created.encryptedRecoveryPackage && created.phoneVerifiedAt),
@@ -318,9 +448,13 @@ const login = async (req, res) => {
             select: {
                 id: true,
                 email: true,
+                firstName: true,
+                lastName: true,
+                country: true,
                 role: true,
                 password: true,
                 encryptionSalt: true,
+                phone: true,
                 encryptedRecoveryPackage: true,
                 phoneVerifiedAt: true,
             },
@@ -365,6 +499,10 @@ const login = async (req, res) => {
             user: {
                 id: user.id,
                 email: user.email,
+                firstName: user.firstName ?? undefined,
+                lastName: user.lastName ?? undefined,
+                country: user.country ?? undefined,
+                phone: user.phone ?? undefined,
                 role: user.role,
                 encryptionSalt: encryptionSalt ?? undefined,
                 recoveryEnabled,
@@ -392,6 +530,9 @@ const me = async (req, res) => {
         select: {
             id: true,
             email: true,
+            firstName: true,
+            lastName: true,
+            country: true,
             role: true,
             createdAt: true,
             forceOnboardingNextLogin: true,
@@ -414,12 +555,30 @@ const me = async (req, res) => {
 exports.me = me;
 const ONBOARDING_STEPS = ["welcome", "admin", "expenses", "investments", "budget", "dashboard", "done"];
 /**
- * PATCH /auth/me — update forceOnboardingNextLogin, onboardingStep, mobileWarningDismissed, preferredDisplayCurrencyId
+ * PATCH /auth/me — update profile and preferences
  */
 const patchMe = async (req, res) => {
     const userId = req.userId;
     const body = req.body;
     const data = {};
+    if (body?.firstName !== undefined) {
+        const v = normalizeName(body.firstName);
+        if (!v || v.length < 2)
+            return res.status(400).json({ error: "firstName is required" });
+        data.firstName = v.slice(0, 80);
+    }
+    if (body?.lastName !== undefined) {
+        const v = normalizeName(body.lastName);
+        if (!v || v.length < 2)
+            return res.status(400).json({ error: "lastName is required" });
+        data.lastName = v.slice(0, 80);
+    }
+    if (body?.country !== undefined) {
+        const v = normalizeCountry(body.country);
+        if (!v || v.length < 2)
+            return res.status(400).json({ error: "country is required" });
+        data.country = v.slice(0, 80);
+    }
     if (body?.forceOnboardingNextLogin === false) {
         data.forceOnboardingNextLogin = false;
     }
