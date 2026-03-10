@@ -52,7 +52,7 @@ function parseUsdUyuRate(v) {
 }
 async function openMonthsForYear(userId, year) {
     const closes = await prisma_1.prisma.monthClose.findMany({
-        where: { userId, year },
+        where: { userId, year, isClosed: true },
         select: { month: true },
     });
     const closed = new Set(closes.map((c) => c.month));
@@ -82,30 +82,40 @@ async function ensurePlannedForYear(userId, year) {
         return { attempted: 0 };
     const monthsOpen = await openMonthsForYear(userId, year);
     const attempted = monthsOpen.length * templates.length;
-    await prisma_1.prisma.$transaction(monthsOpen.flatMap((m) => templates.map((t) => prisma_1.prisma.plannedExpense.upsert({
+    if (monthsOpen.length === 0)
+        return { attempted };
+    const templateIds = templates.map((t) => t.id);
+    const existing = await prisma_1.prisma.plannedExpense.findMany({
         where: {
-            userId_year_month_templateId: {
-                userId,
-                year,
-                month: m,
-                templateId: t.id,
-            },
-        },
-        update: {},
-        create: {
             userId,
             year,
-            month: m,
-            templateId: t.id,
-            expenseType: t.expenseType,
-            categoryId: t.categoryId,
-            description: t.description,
-            amountUsd: t.defaultAmountUsd,
-            isConfirmed: false,
-            ...(t.encryptedPayload ? { encryptedPayload: t.encryptedPayload } : {}),
+            month: { in: monthsOpen },
+            templateId: { in: templateIds },
         },
-    }))));
-    return { attempted };
+        select: { month: true, templateId: true },
+    });
+    const existingKeys = new Set(existing.map((row) => `${row.month}:${row.templateId}`));
+    const missingRows = monthsOpen.flatMap((month) => templates
+        .filter((template) => !existingKeys.has(`${month}:${template.id}`))
+        .map((template) => ({
+        userId,
+        year,
+        month,
+        templateId: template.id,
+        expenseType: template.expenseType,
+        categoryId: template.categoryId,
+        description: template.description,
+        amountUsd: template.defaultAmountUsd,
+        isConfirmed: false,
+        ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
+    })));
+    if (missingRows.length > 0) {
+        await prisma_1.prisma.plannedExpense.createMany({
+            data: missingRows,
+            skipDuplicates: true,
+        });
+    }
+    return { attempted, created: missingRows.length };
 }
 /* =========================================================
    Controllers
@@ -128,27 +138,23 @@ const listPlannedExpenses = async (req, res) => {
         ? { month }
         : {};
     const rows = await prisma_1.prisma.plannedExpense.findMany({
-        where: { userId, year, ...whereMonth },
-        orderBy: [{ month: "asc" }, { expenseType: "asc" }, { categoryId: "asc" }, { description: "asc" }],
+        where: {
+            userId,
+            year,
+            ...whereMonth,
+            OR: [{ templateId: null }, { template: { showInExpenses: true } }],
+        },
+        orderBy: [{ month: "asc" }, { expenseType: "asc" }, { category: { name: "asc" } }, { description: "asc" }],
         include: {
             category: true,
             template: { select: { defaultCurrencyId: true } },
         },
     });
-    // Ocultar borradores de plantillas con showInExpenses = false
-    const templateIds = [...new Set(rows.map((r) => r.templateId).filter(Boolean))];
-    const hiddenTemplateIds = templateIds.length === 0
-        ? new Set()
-        : new Set((await prisma_1.prisma.expenseTemplate.findMany({
-            where: { id: { in: templateIds }, showInExpenses: false },
-            select: { id: true },
-        })).map((t) => t.id));
-    const filtered = rows.filter((r) => !r.templateId || !hiddenTemplateIds.has(r.templateId));
     if (month != null) {
-        res.json({ year, month, rows: filtered });
+        res.json({ year, month, rows });
     }
     else {
-        res.json({ year, rows: filtered });
+        res.json({ year, rows });
     }
 };
 exports.listPlannedExpenses = listPlannedExpenses;
@@ -174,7 +180,7 @@ const updatePlannedExpense = async (req, res) => {
     }
     if (!hasEncrypted) {
         const close = await prisma_1.prisma.monthClose.findFirst({
-            where: { userId, year: pe.year, month: pe.month },
+            where: { userId, year: pe.year, month: pe.month, isClosed: true },
             select: { id: true },
         });
         if (close) {
@@ -250,7 +256,7 @@ const confirmPlannedExpense = async (req, res) => {
     if (!pe)
         return res.status(404).json({ error: "PlannedExpense not found" });
     const close = await prisma_1.prisma.monthClose.findFirst({
-        where: { userId, year: pe.year, month: pe.month },
+        where: { userId, year: pe.year, month: pe.month, isClosed: true },
         select: { id: true },
     });
     if (close) {
@@ -260,15 +266,29 @@ const confirmPlannedExpense = async (req, res) => {
     if (pe.isConfirmed && pe.expense) {
         return res.status(200).json({ expenseId: pe.expense.id });
     }
+    const hasEncrypted = typeof pe.encryptedPayload === "string" && pe.encryptedPayload.length > 0;
     let amountUsd = Number(pe.amountUsd ?? 0);
-    if (!Number.isFinite(amountUsd) || amountUsd <= 0) {
+    if (!hasEncrypted && (!Number.isFinite(amountUsd) || amountUsd <= 0)) {
         return res.status(400).json({ error: "amountUsd must be > 0 to confirm" });
     }
     const isUyu = pe.template?.defaultCurrencyId === "UYU";
     let currencyId = "USD";
     let amount = amountUsd;
     let usdUyuRate = null;
-    if (isUyu) {
+    if (hasEncrypted) {
+        currencyId = isUyu ? "UYU" : "USD";
+        amount = Number.isFinite(pe.amount) && Number(pe.amount) > 0 ? Math.round(Number(pe.amount)) : 0;
+        amountUsd = Number.isFinite(amountUsd) && amountUsd > 0 ? amountUsd : 0;
+        const bodyRate = Number(req.body?.usdUyuRate);
+        const peRate = Number(pe.usdUyuRate);
+        usdUyuRate =
+            currencyId === "UYU" && Number.isFinite(peRate) && peRate > 0
+                ? peRate
+                : currencyId === "UYU" && Number.isFinite(bodyRate) && bodyRate > 0
+                    ? bodyRate
+                    : null;
+    }
+    else if (isUyu) {
         const peAmount = pe.amount;
         const peRate = pe.usdUyuRate;
         const bodyRate = Number(req.body?.usdUyuRate);
@@ -311,6 +331,7 @@ const confirmPlannedExpense = async (req, res) => {
                 date,
                 expenseType: pe.expenseType,
                 plannedExpenseId: pe.id,
+                ...(hasEncrypted ? { encryptedPayload: pe.encryptedPayload } : {}),
             },
         });
         await tx.plannedExpense.update({

@@ -20,26 +20,47 @@ enum ExpenseType {
   VARIABLE
 }
 
+enum BillingProvider {
+  DLOCAL
+}
+
+enum BillingPlanCode {
+  EARLY_STAGE
+  PRO_EARLY_ANNUAL
+  LEGACY_FREE
+  PRO_MONTHLY
+}
+
+enum BillingSubscriptionStatus {
+  TRIALING
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  EXPIRED
+  PAUSED
+  INCOMPLETE
+}
+
 model User {
-  id                        String   @id @default(uuid())
-  email                     String   @unique
-  password                  String
-  firstName                 String?
-  lastName                  String?
-  country                   String?
-  preferredLanguage         String?  // "es" | "en" — idioma preferido para UI y mensajes transaccionales
-  role                      UserRole @default(USER)
-  createdAt                 DateTime @default(now())
-  forceOnboardingNextLogin  Boolean  @default(false)
-  onboardingStep                String   @default("welcome")
-  mobileWarningDismissed        Boolean  @default(false)
-  preferredDisplayCurrencyId   String?  // "USD" | "UYU" — moneda para mostrar totales/resúmenes
+  id                         String   @id @default(uuid())
+  email                      String   @unique
+  password                   String
+  firstName                  String?
+  lastName                   String?
+  country                    String?
+  preferredLanguage          String? // "es" | "en" — idioma preferido para UI y mensajes transaccionales
+  role                       UserRole @default(USER)
+  createdAt                  DateTime @default(now())
+  forceOnboardingNextLogin   Boolean  @default(false)
+  onboardingStep             String   @default("welcome")
+  mobileWarningDismissed     Boolean  @default(false)
+  preferredDisplayCurrencyId String? // "USD" | "UYU" — moneda para mostrar totales/resúmenes
 
   // E2EE + account recovery (phone + email)
-  encryptionSalt              String?   // base64, unique per user; sent to client on login/me
-  phone                       String?   // E.164 or normalized; required for recovery
-  phoneVerifiedAt             DateTime?
-  encryptedRecoveryPackage    String?   // base64( IV || AES-GCM( K ) ); only if E2EE + recovery enabled
+  encryptionSalt           String? // base64, unique per user; sent to client on login/me
+  phone                    String? // E.164 or normalized; required for recovery
+  phoneVerifiedAt          DateTime?
+  encryptedRecoveryPackage String? // base64( IV || AES-GCM( K ) ); only if E2EE + recovery enabled
 
   expenses     Expense[]
   categories   Category[]
@@ -57,6 +78,58 @@ model User {
 
   phoneVerificationCodes PhoneVerificationCode[]
   recoverySessions       RecoverySession[]
+  billingSubscriptions   BillingSubscription[]
+  billingEvents          BillingEvent[]
+}
+
+model BillingSubscription {
+  id                      String                    @id @default(uuid())
+  userId                  String
+  provider                BillingProvider
+  planCode                BillingPlanCode
+  status                  BillingSubscriptionStatus
+  currencyCode            String                    @default("USD")
+  amountMinor             Int
+  trialStartedAt          DateTime?
+  trialEndsAt             DateTime?
+  currentPeriodStartedAt  DateTime?
+  currentPeriodEndsAt     DateTime?
+  graceEndsAt             DateTime?
+  cancelAtPeriodEnd       Boolean                   @default(false)
+  canceledAt              DateTime?
+  endedAt                 DateTime?
+  providerCustomerId      String?
+  providerSubscriptionId  String?
+  providerPaymentMethodId String?
+  providerCardId          String?
+  metadata                Json?
+  createdAt               DateTime                  @default(now())
+  updatedAt               DateTime                  @updatedAt
+
+  user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  events BillingEvent[]
+
+  @@unique([provider, providerSubscriptionId])
+  @@index([userId, createdAt])
+  @@index([userId, status])
+}
+
+model BillingEvent {
+  id                    String          @id @default(uuid())
+  userId                String
+  billingSubscriptionId String?
+  provider              BillingProvider
+  eventType             String
+  externalId            String?
+  payload               Json?
+  createdAt             DateTime        @default(now())
+  processedAt           DateTime?
+
+  user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  billingSubscription BillingSubscription? @relation(fields: [billingSubscriptionId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([provider, externalId])
 }
 
 model LoginLog {
@@ -125,7 +198,7 @@ model Expense {
   expenseType ExpenseType @default(VARIABLE)
 
   // ✅ link to planned/draft (1–1)
-  plannedExpenseId String? @unique
+  plannedExpenseId String?         @unique
   plannedExpense   PlannedExpense? @relation(fields: [plannedExpenseId], references: [id], onDelete: SetNull)
 
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -233,16 +306,16 @@ model Period {
 }
 
 model Income {
-  id        String   @id @default(uuid())
-  userId    String
-  year      Int
-  month     Int
-  amountUsd Float   // total = nominal + extraordinary - taxes (kept in sync)
-  nominalUsd         Float?  // ingresos nominales (ej. del wizard)
-  extraordinaryUsd   Float?  // ingresos extraordinarios
-  taxesUsd           Float?  // impuestos
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id               String   @id @default(uuid())
+  userId           String
+  year             Int
+  month            Int
+  amountUsd        Float // total = nominal + extraordinary - taxes (kept in sync)
+  nominalUsd       Float? // ingresos nominales (ej. del wizard)
+  extraordinaryUsd Float? // ingresos extraordinarios
+  taxesUsd         Float? // impuestos
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
   encryptedPayload String? @db.Text // E2EE: client encrypts amounts
 
@@ -280,12 +353,12 @@ model MonthClose {
   investmentEarningsUsd Float
   balanceUsd            Float
   netWorthStartUsd      Float
-  netWorthEndUsd        Float?  // patrimonio inicio mes siguiente (para balance real)
+  netWorthEndUsd        Float? // patrimonio inicio mes siguiente (para balance real)
 
   // E2EE: client sends encrypted snapshot (totals computed client-side); server stores blob and 0 in numerics
   encryptedPayload String? @db.Text
 
-  isClosed Boolean @default(true) // false = month was reopened; snapshot kept for display
+  isClosed Boolean  @default(true) // false = month was reopened; snapshot kept for display
   closedAt DateTime @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -293,20 +366,22 @@ model MonthClose {
   @@unique([userId, year, month], name: "userId_year_month")
 }
 
-/* =========================================================
-   ✅ templates + planned/drafts
-========================================================= */
+/**
+ * =========================================================
+ * ✅ templates + planned/drafts
+ * =========================================================
+ */
 
 model ExpenseTemplate {
-  id                  String   @id @default(uuid())
-  userId              String
-  expenseType         ExpenseType
-  categoryId          String
-  description         String
-  defaultAmountUsd    Float?
-  defaultCurrencyId   String?  @default("USD")  // moneda en que el usuario ingresa el monto (UYU | USD)
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  id                String      @id @default(uuid())
+  userId            String
+  expenseType       ExpenseType
+  categoryId        String
+  description       String
+  defaultAmountUsd  Float?
+  defaultCurrencyId String?     @default("USD") // moneda en que el usuario ingresa el monto (UYU | USD)
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
 
   // E2EE: client encrypts defaultAmountUsd + description; server stores blob and 0/placeholder
   encryptedPayload String? @db.Text
@@ -322,56 +397,56 @@ model ExpenseTemplate {
 
   planned PlannedExpense[]
 
-  @@index([userId])
   @@unique([userId, expenseType, categoryId, description])
+  @@index([userId])
 }
 
 model PlannedExpense {
-  id          String      @id @default(uuid())
-  userId      String
-  year        Int
-  month       Int
+  id     String @id @default(uuid())
+  userId String
+  year   Int
+  month  Int
 
-  templateId  String?
-  template    ExpenseTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  templateId String?
+  template   ExpenseTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
 
   expenseType ExpenseType
   categoryId  String
   description String
 
   amountUsd   Float?
-  amount      Float?  // UYU amount (locked at edit, avoids display drift)
-  usdUyuRate  Float?  // FX rate when amount was set
+  amount      Float? // UYU amount (locked at edit, avoids display drift)
+  usdUyuRate  Float? // FX rate when amount was set
   isConfirmed Boolean @default(false)
 
   // E2EE: client encrypts amountUsd, amount, description; server stores blob and 0/placeholder
   encryptedPayload String? @db.Text
 
   // Back relation to created real expense (after confirm)
-  expense     Expense?
+  expense Expense?
 
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  category    Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
 
-  @@index([userId, year, month])
   @@unique([userId, year, month, templateId])
+  @@index([userId, year, month])
 }
 
 model MonthlyBudget {
-  id               String   @id @default(uuid())
+  id               String @id @default(uuid())
   userId           String
   year             Int
   month            Int
-  otherExpensesUsd Float   @default(0)
+  otherExpensesUsd Float  @default(0)
 
   // E2EE: client encrypts otherExpensesUsd; server stores blob and 0 when encrypted
   encryptedPayload String? @db.Text
 
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -380,12 +455,12 @@ model MonthlyBudget {
 }
 
 model PhoneVerificationCode {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   userId    String
-  phone    String
+  phone     String
   codeHash  String
   expiresAt DateTime
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
   usedAt    DateTime?
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -395,15 +470,15 @@ model PhoneVerificationCode {
 }
 
 model RecoverySession {
-  id              String    @id @default(uuid())
-  userId          String
-  emailCodeHash   String
-  phoneCodeHash   String
-  expiresAt       DateTime
-  usedAt          DateTime?
-  createdAt       DateTime  @default(now())
-  ip              String?
-  userAgent       String?   @db.VarChar(500)
+  id            String    @id @default(uuid())
+  userId        String
+  emailCodeHash String
+  phoneCodeHash String
+  expiresAt     DateTime
+  usedAt        DateTime?
+  createdAt     DateTime  @default(now())
+  ip            String?
+  userAgent     String?   @db.VarChar(500)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -423,15 +498,15 @@ model RecoveryToken {
 }
 
 model EmailVerificationCode {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   email     String
   codeHash  String
-  purpose   String   // "signup" (y futuro "reset_password" si querés)
+  purpose   String // "signup" (y futuro "reset_password" si querés)
   expiresAt DateTime
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
   usedAt    DateTime?
 
-  attempts  Int      @default(0)
+  attempts  Int     @default(0)
   ip        String?
   userAgent String?
 

@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { requireAuth } from "../middlewares/requireAuth";
+import { requireBillingWriteAccess } from "../middlewares/requireBillingWriteAccess";
 import {
   listInvestmentMovements,
   createInvestmentMovement,
@@ -10,8 +11,8 @@ import {
 const router = Router();
 
 router.get("/", requireAuth, listInvestmentMovements);
-router.post("/", requireAuth, createInvestmentMovement);
-router.put("/:id", requireAuth, updateInvestmentMovement);
-router.delete("/:id", requireAuth, deleteInvestmentMovement);
+router.post("/", requireAuth, requireBillingWriteAccess, createInvestmentMovement);
+router.put("/:id", requireAuth, requireBillingWriteAccess, updateInvestmentMovement);
+router.delete("/:id", requireAuth, requireBillingWriteAccess, deleteInvestmentMovement);
 
 export default router;

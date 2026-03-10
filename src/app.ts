@@ -22,13 +22,16 @@ import expensePlansRoutes from "./expensePlans/expensePlans.routes";
 import investmentMovementsRoutes from "./investmentMovements/investmentMovements.routes";
 import netWorthRoutes from "./networth/networth.routes";
 import monthClosesRoutes from "./monthCloses/monthCloses.routes";
+import billingRoutes from "./billing/billing.routes";
 
 import adminRouter from "./admin/admin.routes";
 
 import plannedExpensesRoutes from "./plannedExpenses/plannedExpenses.routes";
 import fxRoutes from "./fx/fx.routes";
 
-
+function captureRawBody(req: express.Request, _res: express.Response, buf: Buffer) {
+  (req as express.Request & { rawBody?: string }).rawBody = buf.toString("utf8");
+}
 
 const app = express();
 
@@ -93,7 +96,8 @@ app.use(
 );
 
 // ✅ JSON después
-app.use(express.json());
+app.use(express.json({ verify: captureRawBody }));
+app.use(express.urlencoded({ extended: true, verify: captureRawBody }));
 
 // ✅ rutas
 app.use("/auth", authRoutes);
@@ -116,6 +120,7 @@ app.use("/investments/movements", investmentMovementsRoutes);
 // (opcional) alias para evitar confusión si el front llama a /investment-movements
 app.use("/investment-movements", investmentMovementsRoutes);
 app.use("/monthCloses", monthClosesRoutes);
+app.use("/billing", billingRoutes);
 app.use("/admin", adminRouter);
 app.use("/plannedExpenses", plannedExpensesRoutes);
 app.use("/fx", fxRoutes);

@@ -2,12 +2,13 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const requireAuth_1 = require("../middlewares/requireAuth");
+const requireBillingWriteAccess_1 = require("../middlewares/requireBillingWriteAccess");
 const monthCloses_controller_1 = require("./monthCloses.controller");
 const router = (0, express_1.Router)();
 router.get("/", requireAuth_1.requireAuth, monthCloses_controller_1.listMonthCloses);
-router.patch("/:id", requireAuth_1.requireAuth, monthCloses_controller_1.patchMonthCloseEncryptedPayload);
+router.patch("/:id", requireAuth_1.requireAuth, requireBillingWriteAccess_1.requireBillingWriteAccess, monthCloses_controller_1.patchMonthCloseEncryptedPayload);
 router.post("/preview", requireAuth_1.requireAuth, monthCloses_controller_1.previewMonthClose);
 router.get("/preview", requireAuth_1.requireAuth, monthCloses_controller_1.previewMonthClose);
-router.post("/close", requireAuth_1.requireAuth, monthCloses_controller_1.closeMonth);
-router.post("/reopen", requireAuth_1.requireAuth, monthCloses_controller_1.reopenMonth);
+router.post("/close", requireAuth_1.requireAuth, requireBillingWriteAccess_1.requireBillingWriteAccess, monthCloses_controller_1.closeMonth);
+router.post("/reopen", requireAuth_1.requireAuth, requireBillingWriteAccess_1.requireBillingWriteAccess, monthCloses_controller_1.reopenMonth);
 exports.default = router;

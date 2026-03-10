@@ -2,8 +2,9 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const requireAuth_1 = require("../middlewares/requireAuth");
+const requireBillingWriteAccess_1 = require("../middlewares/requireBillingWriteAccess");
 const expensePlans_controller_1 = require("./expensePlans.controller");
 const router = (0, express_1.Router)();
-router.post("/", requireAuth_1.requireAuth, expensePlans_controller_1.upsertExpensePlan);
+router.post("/", requireAuth_1.requireAuth, requireBillingWriteAccess_1.requireBillingWriteAccess, expensePlans_controller_1.upsertExpensePlan);
 router.get("/", requireAuth_1.requireAuth, expensePlans_controller_1.listExpensePlans);
 exports.default = router;

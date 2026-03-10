@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.annualBudget = exports.updateOtherExpenses = exports.budgetReport = exports.listBudgets = exports.upsertBudget = void 0;
+exports.pageData = exports.annualBudget = exports.updateOtherExpenses = exports.budgetReport = exports.listBudgets = exports.upsertBudget = void 0;
+exports.buildAnnualData = buildAnnualData;
 const prisma_1 = require("../lib/prisma");
 /* =========================================================
    Helpers
@@ -176,7 +177,7 @@ const updateOtherExpenses = async (req, res) => {
     }
     if (!hasEncrypted) {
         const closed = await prisma_1.prisma.monthClose.findFirst({
-            where: { userId, year, month },
+            where: { userId, year, month, isClosed: true },
             select: { id: true },
         });
         if (closed)
@@ -205,15 +206,14 @@ function buildInvMonthMap(invId, rows) {
     for (const r of rows) {
         if (r.investmentId !== invId)
             continue;
-        m.set(r.month, { capital: r.capital ?? null, capitalUsd: r.capitalUsd ?? null });
+        m.set(r.month, { capital: r.capital ?? null, capitalUsd: r.capitalUsd ?? null, isClosed: r.isClosed ?? false });
     }
     return m;
 }
-const annualBudget = async (req, res) => {
-    const userId = req.userId;
-    const year = parseYear(req.query);
-    if (!year)
-        return res.status(400).json({ error: "Provide year query param (e.g., ?year=2026)" });
+async function buildAnnualData(userId, year) {
+    const now = new Date();
+    const currentYear = now.getUTCFullYear();
+    const currentMonth = now.getUTCMonth() + 1;
     // -------- MonthCloses (locked)
     const closes = await prisma_1.prisma.monthClose.findMany({
         where: { userId, year },
@@ -280,28 +280,42 @@ const annualBudget = async (req, res) => {
     // snapshots: capital + capitalUsd
     const snaps = await prisma_1.prisma.investmentSnapshot.findMany({
         where: { investment: { userId }, year },
-        select: { investmentId: true, month: true, capital: true, capitalUsd: true },
+        select: { investmentId: true, month: true, capital: true, capitalUsd: true, isClosed: true },
     });
-    // FX por mes (para convertir UYU si falta capitalUsd)
-    const fxByMonth = new Map();
-    for (const m of months12) {
-        // eslint-disable-next-line no-await-in-loop
-        fxByMonth.set(m, await getUsdUyuRateForMonthOrDefault(userId, year, m));
+    const explicitSnapshotMonths = new Set();
+    for (const s of snaps) {
+        const cap = s.capital ?? 0;
+        const capUsd = s.capitalUsd ?? 0;
+        const hasMeaningfulValue = cap !== 0 || capUsd !== 0;
+        // Ignore open 0/0 placeholders (common after onboarding/E2EE flows):
+        // those should not reset net worth anchors/projections.
+        if ((hasMeaningfulValue || s.isClosed) && s.month >= 1 && s.month <= 12) {
+            explicitSnapshotMonths.add(s.month);
+        }
     }
+    // FX por mes (para convertir UYU si falta capitalUsd) — en paralelo
+    const fxValues = await Promise.all(months12.map((m) => getUsdUyuRateForMonthOrDefault(userId, year, m)));
+    const fxByMonth = new Map();
+    months12.forEach((m, i) => fxByMonth.set(m, fxValues[i]));
     function snapUsdFor(inv, snap, m) {
-        if (snap.capitalUsd != null)
-            return snap.capitalUsd;
-        if (snap.capital == null)
+        const cap = snap.capital;
+        const capUsd = snap.capitalUsd;
+        const isOpenZeroPlaceholder = !snap.isClosed && (cap ?? 0) === 0 && (capUsd ?? 0) === 0;
+        if (isOpenZeroPlaceholder)
+            return null;
+        if (capUsd != null)
+            return capUsd;
+        if (cap == null)
             return null;
         const cur = (inv.currencyId ?? "USD").toUpperCase();
         if (cur === "USD")
             return snap.capital;
         if (cur === "UYU") {
             const fx = fxByMonth.get(m) ?? 38;
-            return fx > 0 ? snap.capital / fx : 0;
+            return fx > 0 ? cap / fx : 0;
         }
         // moneda desconocida: asumimos USD
-        return snap.capital;
+        return cap;
     }
     function capitalUsdPortfolio(inv, byM, m) {
         const directSnap = byM.get(m);
@@ -437,16 +451,23 @@ const annualBudget = async (req, res) => {
             continue;
         }
         const incomeUsd = incomeByMonth.get(m) ?? 0;
-        // ✅ regla: si hay actuals, usamos actual; si no, usamos drafts
+        // Regla: si hay actuals, usamos actual.
+        // Si no hay actuals, usamos drafts solo para mes actual/futuros.
+        // Meses pasados sin actuals deben quedar en 0.
         const actualBase = actualByMonth.get(m) ?? 0;
         const plannedBase = plannedByMonth.get(m) ?? 0;
-        const baseExpensesUsd = actualBase > 0 ? actualBase : plannedBase;
+        const isPastMonth = year < currentYear || (year === currentYear && m < currentMonth);
+        const baseExpensesUsd = actualBase > 0 ? actualBase : (isPastMonth ? 0 : plannedBase);
         const otherData = otherByMonth.get(m);
         const otherExpensesUsd = otherData?.otherExpensesUsd ?? 0;
         const expensesUsd = baseExpensesUsd + otherExpensesUsd;
         const investmentEarningsUsd = portfolioRealReturns[idx] ?? 0;
         const balanceUsd = incomeUsd - expensesUsd + investmentEarningsUsd;
-        const netWorthStartUsd = m === 1 ? (totalNWBaseline[0] ?? 0) : prevNetWorthStart + prevBalance;
+        const chainedNetWorthStartUsd = m === 1 ? (totalNWBaseline[0] ?? 0) : prevNetWorthStart + prevBalance;
+        const baselineNetWorthStartUsd = totalNWBaseline[idx] ?? chainedNetWorthStartUsd;
+        // If user has an explicit snapshot in this month, anchor start net worth to baseline
+        // so first active month reflects actual loaded capital (instead of carrying from prior months).
+        const netWorthStartUsd = explicitSnapshotMonths.has(m) ? baselineNetWorthStartUsd : chainedNetWorthStartUsd;
         months.push({
             month: m,
             isClosed: false,
@@ -463,6 +484,174 @@ const annualBudget = async (req, res) => {
         prevNetWorthStart = netWorthStartUsd;
         prevBalance = balanceUsd;
     }
-    res.json({ year, months });
+    // include the expense totals for callers that need them (pageData)
+    const expenseObj = {};
+    for (const [m, amt] of actualByMonth.entries())
+        expenseObj[m] = amt;
+    return { year, months, expensesUsdByMonth: expenseObj };
+}
+const annualBudget = async (req, res) => {
+    const userId = req.userId;
+    const year = parseYear(req.query);
+    if (!year)
+        return res.status(400).json({ error: "Provide year query param (e.g., ?year=2026)" });
+    const data = await buildAnnualData(userId, year);
+    res.json(data);
 };
 exports.annualBudget = annualBudget;
+/** GET /budgets/page-data?year=YYYY - single payload for Presupuestos: annual, income, planned, expenses, investments, snapshots, movements. */
+const pageData = async (req, res) => {
+    const userId = req.userId;
+    const year = parseYear(req.query);
+    if (!year)
+        return res.status(400).json({ error: "Provide year query param (e.g., ?year=2026)" });
+    const prevYear = year - 1;
+    const yearStart = new Date(Date.UTC(year, 0, 1, 0, 0, 0));
+    const yearEnd = new Date(Date.UTC(year + 1, 0, 1, 0, 0, 0));
+    const prevYearStart = new Date(Date.UTC(prevYear, 0, 1, 0, 0, 0));
+    const prevYearEnd = new Date(Date.UTC(prevYear + 1, 0, 1, 0, 0, 0));
+    // buildAnnualData already scans expenses and produces base totals per month; reuse it
+    const [annual, incomeRows, plannedRows, investments, movementRows, expenseRows] = await Promise.all([
+        buildAnnualData(userId, year),
+        prisma_1.prisma.income.findMany({
+            where: { userId, year },
+            orderBy: { month: "asc" },
+            select: { id: true, month: true, amountUsd: true, nominalUsd: true, extraordinaryUsd: true, taxesUsd: true, encryptedPayload: true },
+        }),
+        prisma_1.prisma.plannedExpense.findMany({
+            where: { userId, year },
+            select: { month: true, amountUsd: true, encryptedPayload: true },
+        }),
+        // we only need minimal investment metadata here;
+        // snapshots are fetched in bulk below
+        prisma_1.prisma.investment.findMany({
+            where: { userId },
+            select: { id: true, name: true, type: true, currencyId: true, targetAnnualReturn: true, yieldStartYear: true, yieldStartMonth: true },
+        }),
+        prisma_1.prisma.investmentMovement.findMany({
+            where: { investment: { userId }, date: { gte: yearStart, lt: yearEnd } },
+            orderBy: [{ date: "asc" }],
+            select: { id: true, investmentId: true, date: true, type: true, amount: true, currencyId: true, encryptedPayload: true },
+        }),
+        prisma_1.prisma.expense.findMany({
+            where: { userId, date: { gte: yearStart, lt: yearEnd } },
+            orderBy: [{ date: "asc" }],
+            select: { date: true, amountUsd: true, encryptedPayload: true },
+        }),
+    ]);
+    const income = {
+        year,
+        rows: incomeRows.map((r) => {
+            const nominal = r.nominalUsd ?? r.amountUsd ?? 0;
+            const extraordinary = r.extraordinaryUsd ?? 0;
+            const taxes = r.taxesUsd ?? 0;
+            const totalUsd = r.nominalUsd != null ? nominal + extraordinary - taxes : (r.amountUsd ?? 0);
+            return { id: r.id, month: r.month, totalUsd, encryptedPayload: r.encryptedPayload ?? undefined };
+        }),
+    };
+    const planned = { year, rows: plannedRows.map((r) => ({ month: r.month, amountUsd: r.amountUsd ?? null, encryptedPayload: r.encryptedPayload ?? undefined })) };
+    // Build a simple totals map for expenses by month.  buildAnnualData already computed it,
+    // but we don't expose it there; we can reconstruct from the `annual` result instead
+    // (the helper changed below). To avoid an extra query, we use `annual.expensesUsdByMonth`.
+    // `annual` is modified to contain that map in the new helper.
+    const expensesByMonth = { byMonth: Array.from({ length: 12 }, (_, i) => {
+            const amt = annual.expensesUsdByMonth?.[i + 1] ?? 0;
+            // keep same shape consumed by front-end: array of objects with amountUsd
+            return amt !== 0 ? [{ amountUsd: amt }] : [];
+        }) };
+    const yearExpensesByMonth = { byMonth: Array.from({ length: 12 }, () => []) };
+    for (const row of expenseRows) {
+        const monthIndex = row.date.getUTCMonth();
+        if (monthIndex < 0 || monthIndex >= 12)
+            continue;
+        yearExpensesByMonth.byMonth[monthIndex]?.push({
+            amountUsd: row.amountUsd ?? 0,
+            encryptedPayload: row.encryptedPayload ?? undefined,
+        });
+    }
+    const portfolios = investments.filter((i) => i.type === "PORTFOLIO");
+    const portfolioIds = portfolios.map((p) => p.id);
+    // batch snapshots in two simple queries instead of one per portfolio (N+1 problem)
+    const allSnapsYear = await prisma_1.prisma.investmentSnapshot.findMany({
+        where: { investmentId: { in: portfolioIds }, year },
+        orderBy: { month: "asc" },
+        select: { id: true, investmentId: true, year: true, month: true, capital: true, capitalUsd: true, encryptedPayload: true, isClosed: true },
+    });
+    const allSnapsPrevYear = await prisma_1.prisma.investmentSnapshot.findMany({
+        where: { investmentId: { in: portfolioIds }, year: prevYear },
+        orderBy: { month: "asc" },
+        select: { id: true, investmentId: true, year: true, month: true, capital: true, capitalUsd: true, encryptedPayload: true, isClosed: true },
+    });
+    const allInvestmentSnapsYear = await prisma_1.prisma.investmentSnapshot.findMany({
+        where: { investment: { userId }, year },
+        orderBy: [{ investmentId: "asc" }, { month: "asc" }],
+        select: { investmentId: true, month: true, capital: true, capitalUsd: true, encryptedPayload: true },
+    });
+    // group them into arrays in the same structure the front‑end expects
+    const snapsByInv = new Map();
+    for (const s of allSnapsYear) {
+        const arr = snapsByInv.get(s.investmentId) ?? [];
+        arr.push(s);
+        snapsByInv.set(s.investmentId, arr);
+    }
+    const snapsByInvPrev = new Map();
+    for (const s of allSnapsPrevYear) {
+        const arr = snapsByInvPrev.get(s.investmentId) ?? [];
+        arr.push(s);
+        snapsByInvPrev.set(s.investmentId, arr);
+    }
+    const snapshotsYear = portfolios.map((p) => snapsByInv.get(p.id) ?? []);
+    const snapshotsPrevYear = portfolios.map((p) => snapsByInvPrev.get(p.id) ?? []);
+    const snapToMonth = (snaps) => {
+        const map = new Map(snaps.map((s) => [s.month, s]));
+        return Array.from({ length: 12 }, (_, i) => i + 1).map((m) => {
+            const s = map.get(m);
+            return s
+                ? { id: s.id ?? null, month: m, closingCapital: s.capital ?? null, closingCapitalUsd: s.capitalUsd ?? null, encryptedPayload: s.encryptedPayload ?? undefined, isClosed: s.isClosed ?? false }
+                : { id: null, month: m, closingCapital: null, closingCapitalUsd: null, encryptedPayload: undefined, isClosed: false };
+        });
+    };
+    const allSnapsByInv = new Map();
+    for (const s of allInvestmentSnapsYear) {
+        const arr = allSnapsByInv.get(s.investmentId) ?? [];
+        arr.push(s);
+        allSnapsByInv.set(s.investmentId, arr);
+    }
+    const movements = {
+        year,
+        rows: movementRows.map((mv) => ({
+            id: mv.id,
+            investmentId: mv.investmentId,
+            date: mv.date.toISOString().slice(0, 10),
+            month: mv.date.getUTCMonth() + 1,
+            type: mv.type,
+            amount: mv.amount,
+            currencyId: mv.currencyId,
+            encryptedPayload: mv.encryptedPayload ?? undefined,
+        })),
+    };
+    res.json({
+        annual,
+        income,
+        planned,
+        expensesByMonth,
+        yearExpensesByMonth,
+        investments: investments.map((i) => ({
+            id: i.id,
+            name: i.name,
+            type: i.type,
+            currencyId: i.currencyId,
+            targetAnnualReturn: i.targetAnnualReturn,
+            yieldStartYear: i.yieldStartYear,
+            yieldStartMonth: i.yieldStartMonth,
+        })),
+        snapshotsYear: snapshotsYear.map(snapToMonth),
+        snapshotsPrevYear: snapshotsPrevYear.map(snapToMonth),
+        investmentSnapshotsYear: investments.map((inv) => ({
+            investmentId: inv.id,
+            months: snapToMonth(allSnapsByInv.get(inv.id) ?? []),
+        })),
+        movements,
+    });
+};
+exports.pageData = pageData;

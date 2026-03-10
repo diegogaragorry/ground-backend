@@ -2,9 +2,10 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = require("express");
 const requireAuth_1 = require("../middlewares/requireAuth");
+const requireBillingWriteAccess_1 = require("../middlewares/requireBillingWriteAccess");
 const income_controller_1 = require("./income.controller");
 const router = (0, express_1.Router)();
-router.post("/", requireAuth_1.requireAuth, income_controller_1.upsertIncome);
-router.patch("/", requireAuth_1.requireAuth, income_controller_1.patchIncomeMonth);
+router.post("/", requireAuth_1.requireAuth, requireBillingWriteAccess_1.requireBillingWriteAccess, income_controller_1.upsertIncome);
+router.patch("/", requireAuth_1.requireAuth, requireBillingWriteAccess_1.requireBillingWriteAccess, income_controller_1.patchIncomeMonth);
 router.get("/", requireAuth_1.requireAuth, income_controller_1.listIncome);
 exports.default = router;

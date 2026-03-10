@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deleteExpense = exports.updateExpense = exports.expensesSummary = exports.listExpensesByMonth = exports.createExpense = void 0;
+exports.deleteExpense = exports.updateExpense = exports.expensesSummary = exports.expensesPageData = exports.listExpensesByMonth = exports.listExpensesByYear = exports.createExpense = void 0;
 const prisma_1 = require("../lib/prisma");
 const fx_1 = require("../utils/fx");
 function paramId(params) {
@@ -107,6 +107,42 @@ const createExpense = async (req, res) => {
     return res.status(201).json(expense);
 };
 exports.createExpense = createExpense;
+function parseYear(query) {
+    const year = Number(query.year);
+    if (!Number.isInteger(year) || year < 2000 || year > 2100)
+        return null;
+    return year;
+}
+/** GET /expenses?year=YYYY - returns all expenses for the year, grouped by month (byMonth[0]=Jan, .. byMonth[11]=Dec). */
+const listExpensesByYear = async (req, res) => {
+    const userId = req.userId;
+    const year = parseYear(req.query);
+    if (year == null) {
+        return res.status(400).json({ error: "Provide ?year=YYYY" });
+    }
+    const start = new Date(Date.UTC(year, 0, 1, 0, 0, 0));
+    const end = new Date(Date.UTC(year, 12, 1, 0, 0, 0));
+    const expenses = await prisma_1.prisma.expense.findMany({
+        where: { userId, date: { gte: start, lt: end } },
+        orderBy: [
+            { expenseType: "asc" },
+            { category: { name: "asc" } },
+            { description: "asc" },
+        ],
+        include: {
+            category: { select: { id: true, name: true, nameKey: true, expenseType: true } },
+            currency: true,
+        },
+    });
+    const byMonth = Array.from({ length: 12 }, () => []);
+    for (const e of expenses) {
+        const m = e.date.getUTCMonth();
+        if (m >= 0 && m < 12)
+            byMonth[m].push(e);
+    }
+    res.json({ byMonth });
+};
+exports.listExpensesByYear = listExpensesByYear;
 const listExpensesByMonth = async (req, res) => {
     const userId = req.userId;
     const ym = parseYearMonth(req.query);
@@ -117,7 +153,11 @@ const listExpensesByMonth = async (req, res) => {
     const end = new Date(Date.UTC(ym.year, ym.month, 1, 0, 0, 0));
     const expenses = await prisma_1.prisma.expense.findMany({
         where: { userId, date: { gte: start, lt: end } },
-        orderBy: { date: "desc" },
+        orderBy: [
+            { expenseType: "asc" },
+            { category: { name: "asc" } },
+            { description: "asc" },
+        ],
         include: {
             category: { select: { id: true, name: true, nameKey: true, expenseType: true } },
             currency: true,
@@ -126,6 +166,65 @@ const listExpensesByMonth = async (req, res) => {
     res.json(expenses);
 };
 exports.listExpensesByMonth = listExpensesByMonth;
+const expensesPageData = async (req, res) => {
+    const userId = req.userId;
+    const ym = parseYearMonth(req.query);
+    if (!ym) {
+        return res.status(400).json({ error: "Provide ?year=YYYY&month=M" });
+    }
+    const start = new Date(Date.UTC(ym.year, ym.month - 1, 1, 0, 0, 0));
+    const end = new Date(Date.UTC(ym.year, ym.month, 1, 0, 0, 0));
+    const [categories, expenses, plannedRows, monthCloses] = await Promise.all([
+        prisma_1.prisma.category.findMany({
+            where: { userId },
+            orderBy: { name: "asc" },
+            select: { id: true, name: true, expenseType: true, nameKey: true },
+        }),
+        prisma_1.prisma.expense.findMany({
+            where: { userId, date: { gte: start, lt: end } },
+            orderBy: [
+                { expenseType: "asc" },
+                { category: { name: "asc" } },
+                { description: "asc" },
+            ],
+            include: {
+                category: { select: { id: true, name: true, nameKey: true, expenseType: true } },
+                currency: true,
+            },
+        }),
+        prisma_1.prisma.plannedExpense.findMany({
+            where: {
+                userId,
+                year: ym.year,
+                month: ym.month,
+                OR: [{ templateId: null }, { template: { showInExpenses: true } }],
+            },
+            orderBy: [
+                { expenseType: "asc" },
+                { category: { name: "asc" } },
+                { description: "asc" },
+            ],
+            include: {
+                category: { select: { id: true, name: true, nameKey: true, expenseType: true } },
+                template: { select: { defaultCurrencyId: true } },
+            },
+        }),
+        prisma_1.prisma.monthClose.findMany({
+            where: { userId, year: ym.year },
+            orderBy: { month: "asc" },
+            select: { year: true, month: true, isClosed: true },
+        }),
+    ]);
+    res.json({
+        year: ym.year,
+        month: ym.month,
+        categories,
+        expenses,
+        planned: { rows: plannedRows },
+        monthCloses: { year: ym.year, rows: monthCloses },
+    });
+};
+exports.expensesPageData = expensesPageData;
 const expensesSummary = async (req, res) => {
     const userId = req.userId;
     const ym = parseYearMonth(req.query);

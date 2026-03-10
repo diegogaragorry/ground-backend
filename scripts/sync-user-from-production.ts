@@ -72,6 +72,10 @@ async function main() {
     id: prodUserRow.id,
     email: prodUserRow.email,
     password: prodUserRow.password,
+    firstName: prodUserRow.firstName ?? null,
+    lastName: prodUserRow.lastName ?? null,
+    country: prodUserRow.country ?? null,
+    preferredLanguage: prodUserRow.preferredLanguage ?? null,
     role: prodUserRow.role,
     createdAt: prodUserRow.createdAt,
     forceOnboardingNextLogin: prodUserRow.forceOnboardingNextLogin ?? false,
@@ -100,6 +104,8 @@ async function main() {
     phoneVerificationCodes,
     recoverySessions,
     recoveryTokens,
+    billingSubscriptions,
+    billingEvents,
   ] = await Promise.all([
     prodPrisma.$queryRaw<RawRow[]>`SELECT * FROM "Category" WHERE "userId" = ${userId}`,
     prodPrisma.$queryRaw<RawRow[]>`SELECT * FROM "Investment" WHERE "userId" = ${userId}`,
@@ -116,6 +122,8 @@ async function main() {
     prodQueryRaw(() => prodPrisma.$queryRaw<RawRow[]>`SELECT * FROM "PhoneVerificationCode" WHERE "userId" = ${userId}`, []),
     prodQueryRaw(() => prodPrisma.$queryRaw<RawRow[]>`SELECT * FROM "RecoverySession" WHERE "userId" = ${userId}`, []),
     prodQueryRaw(() => prodPrisma.$queryRaw<RawRow[]>`SELECT * FROM "RecoveryToken" WHERE "userId" = ${userId}`, []),
+    prodQueryRaw(() => prodPrisma.$queryRaw<RawRow[]>`SELECT * FROM "BillingSubscription" WHERE "userId" = ${userId}`, []),
+    prodQueryRaw(() => prodPrisma.$queryRaw<RawRow[]>`SELECT * FROM "BillingEvent" WHERE "userId" = ${userId}`, []),
   ]);
 
   const investmentIds = new Set<string>(investments.map((i) => i.id as string));
@@ -168,6 +176,10 @@ async function main() {
         id: prodUser.id,
         email: prodUser.email,
         password: prodUser.password,
+        firstName: prodUser.firstName,
+        lastName: prodUser.lastName,
+        country: prodUser.country,
+        preferredLanguage: prodUser.preferredLanguage,
         role: prodUser.role,
         createdAt: prodUser.createdAt,
         forceOnboardingNextLogin: prodUser.forceOnboardingNextLogin,
@@ -199,6 +211,8 @@ async function main() {
     if (phoneVerificationCodes.length) await tx.phoneVerificationCode.createMany({ data: phoneVerificationCodes });
     if (recoverySessions.length) await tx.recoverySession.createMany({ data: recoverySessions });
     if (recoveryTokens.length) await tx.recoveryToken.createMany({ data: recoveryTokens });
+    if (billingSubscriptions.length) await tx.billingSubscription.createMany({ data: billingSubscriptions });
+    if (billingEvents.length) await tx.billingEvent.createMany({ data: billingEvents });
   });
 
   await localPrisma.$disconnect();

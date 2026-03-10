@@ -18,7 +18,7 @@ function paramId(params) {
 }
 async function openMonthsForYear(userId, year) {
     const closes = await prisma_1.prisma.monthClose.findMany({
-        where: { userId, year },
+        where: { userId, year, isClosed: true },
         select: { month: true },
     });
     const closed = new Set(closes.map((c) => c.month));

@@ -22,18 +22,24 @@ function yieldStartMonthForYear(inv, year) {
 function capitalUsdForMonth(inv, snaps, m, year) {
     const byM = new Map();
     for (const s of snaps)
-        byM.set(s.month, s.capitalUsd);
+        byM.set(s.month, { capitalUsd: s.capitalUsd, isClosed: s.isClosed ?? false });
     const direct = byM.get(m);
-    if (direct != null)
-        return direct;
+    if (direct) {
+        const isOpenZeroPlaceholder = !direct.isClosed && (direct.capitalUsd ?? 0) === 0;
+        if (!isOpenZeroPlaceholder && direct.capitalUsd != null)
+            return direct.capitalUsd;
+    }
     // base anterior
     let baseMonth = null;
     let baseValue = null;
     for (let i = m - 1; i >= 1; i--) {
         const v = byM.get(i);
-        if (v != null) {
+        if (!v)
+            continue;
+        const isOpenZeroPlaceholder = !v.isClosed && (v.capitalUsd ?? 0) === 0;
+        if (!isOpenZeroPlaceholder && v.capitalUsd != null) {
             baseMonth = i;
-            baseValue = v;
+            baseValue = v.capitalUsd;
             break;
         }
     }
@@ -48,12 +54,12 @@ function capitalUsdForMonth(inv, snaps, m, year) {
 async function buildSnapshotsByInv(userId, year) {
     const snaps = await prisma_1.prisma.investmentSnapshot.findMany({
         where: { investment: { userId }, year },
-        select: { investmentId: true, month: true, capitalUsd: true },
+        select: { investmentId: true, month: true, capitalUsd: true, isClosed: true },
     });
     const snapsByInv = new Map();
     for (const s of snaps) {
         const arr = snapsByInv.get(s.investmentId) ?? [];
-        arr.push({ month: s.month, capitalUsd: s.capitalUsd ?? null });
+        arr.push({ month: s.month, capitalUsd: s.capitalUsd ?? null, isClosed: s.isClosed ?? false });
         snapsByInv.set(s.investmentId, arr);
     }
     return snapsByInv;

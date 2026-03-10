@@ -21,9 +21,13 @@ const expensePlans_routes_1 = __importDefault(require("./expensePlans/expensePla
 const investmentMovements_routes_1 = __importDefault(require("./investmentMovements/investmentMovements.routes"));
 const networth_routes_1 = __importDefault(require("./networth/networth.routes"));
 const monthCloses_routes_1 = __importDefault(require("./monthCloses/monthCloses.routes"));
+const billing_routes_1 = __importDefault(require("./billing/billing.routes"));
 const admin_routes_1 = __importDefault(require("./admin/admin.routes"));
 const plannedExpenses_routes_1 = __importDefault(require("./plannedExpenses/plannedExpenses.routes"));
 const fx_routes_1 = __importDefault(require("./fx/fx.routes"));
+function captureRawBody(req, _res, buf) {
+    req.rawBody = buf.toString("utf8");
+}
 const app = (0, express_1.default)();
 // ✅ CORS: orígenes permitidos (Vercel, ground.finance y subdominios, localhost).
 const allowedOrigins = [
@@ -86,7 +90,8 @@ app.use((0, cors_1.default)({
     optionsSuccessStatus: 204,
 }));
 // ✅ JSON después
-app.use(express_1.default.json());
+app.use(express_1.default.json({ verify: captureRawBody }));
+app.use(express_1.default.urlencoded({ extended: true, verify: captureRawBody }));
 // ✅ rutas
 app.use("/auth", auth_routes_1.default);
 app.use("/categories", categories_routes_1.default);
@@ -103,6 +108,7 @@ app.use("/investments/movements", investmentMovements_routes_1.default);
 // (opcional) alias para evitar confusión si el front llama a /investment-movements
 app.use("/investment-movements", investmentMovements_routes_1.default);
 app.use("/monthCloses", monthCloses_routes_1.default);
+app.use("/billing", billing_routes_1.default);
 app.use("/admin", admin_routes_1.default);
 app.use("/plannedExpenses", plannedExpenses_routes_1.default);
 app.use("/fx", fx_routes_1.default);
