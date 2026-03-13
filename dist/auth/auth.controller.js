@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.phoneVerify = exports.phoneRequest = exports.patchMe = exports.me = exports.login = exports.forgotPasswordVerify = exports.forgotPasswordRequestCode = exports.registerVerify = exports.registerRequestCode = void 0;
+exports.finalizeOnboarding = exports.phoneVerify = exports.phoneRequest = exports.patchMe = exports.me = exports.login = exports.forgotPasswordVerify = exports.forgotPasswordRequestCode = exports.registerVerify = exports.registerRequestCode = void 0;
 const bcrypt_1 = __importDefault(require("bcrypt"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const crypto_1 = __importDefault(require("crypto"));
@@ -14,6 +14,7 @@ const mailer_1 = require("../lib/mailer");
 const authMessages_1 = require("../lib/authMessages");
 const preferredLanguage_1 = require("../lib/preferredLanguage");
 const sms_1 = require("../lib/sms");
+const fx_1 = require("../utils/fx");
 function normalizeEmail(email) {
     return String(email || "").trim().toLowerCase();
 }
@@ -22,6 +23,12 @@ function normalizeName(value) {
 }
 function normalizeCountry(value) {
     return String(value ?? "").trim().replace(/\s+/g, " ");
+}
+function parseMonth(v) {
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 1 || n > 12)
+        return null;
+    return n;
 }
 function gen6() {
     return String(Math.floor(100000 + Math.random() * 900000));
@@ -705,3 +712,178 @@ const phoneVerify = async (req, res) => {
     return res.status(200).json({ ok: true });
 };
 exports.phoneVerify = phoneVerify;
+/**
+ * POST /auth/me/onboarding/finalize
+ * Batches the wizard's final step to avoid many round-trips on first login.
+ */
+const finalizeOnboarding = async (req, res) => {
+    const userId = req.userId;
+    const body = req.body ?? {};
+    const year = Number(body.year);
+    const currentMonth = parseMonth(body.currentMonth);
+    if (!Number.isInteger(year) || currentMonth == null) {
+        return res.status(400).json({ error: "year and currentMonth are required" });
+    }
+    const income = body?.incomeWork;
+    const savings = body?.savings;
+    const investments = Array.isArray(body?.investments) ? body.investments : [];
+    const monthRange = Array.from({ length: 12 - currentMonth + 1 }, (_, idx) => currentMonth + idx);
+    const previousMonth = currentMonth === 1 ? 12 : currentMonth - 1;
+    const previousMonthYear = currentMonth === 1 ? year - 1 : year;
+    try {
+        const result = await prisma_1.prisma.$transaction(async (tx) => {
+            if (income?.enabled) {
+                if (income.amountUsd == null || income.amountUsd === "") {
+                    // Keep current onboarding behavior: checked but empty amount means "skip income creation".
+                }
+                else {
+                    const amountUsd = Number(income.amountUsd);
+                    if (!Number.isFinite(amountUsd) || amountUsd < 0) {
+                        throw new Error("incomeWork.amountUsd must be >= 0");
+                    }
+                    const incomeType = String(income.type ?? "liquid");
+                    const taxesUsd = Number(income.taxesUsd ?? 0);
+                    if (!Number.isFinite(taxesUsd) || taxesUsd < 0) {
+                        throw new Error("incomeWork.taxesUsd must be >= 0");
+                    }
+                    for (const month of monthRange) {
+                        const nominalUsd = amountUsd;
+                        const computedTaxes = incomeType === "nominal" ? taxesUsd : 0;
+                        const totalUsd = incomeType === "nominal" ? nominalUsd - computedTaxes : nominalUsd;
+                        await tx.income.upsert({
+                            where: { userId_year_month: { userId, year, month } },
+                            update: {
+                                amountUsd: totalUsd,
+                                nominalUsd,
+                                extraordinaryUsd: 0,
+                                taxesUsd: computedTaxes,
+                            },
+                            create: {
+                                userId,
+                                year,
+                                month,
+                                amountUsd: totalUsd,
+                                nominalUsd,
+                                extraordinaryUsd: 0,
+                                taxesUsd: computedTaxes,
+                            },
+                        });
+                    }
+                }
+            }
+            let bankAccountId = null;
+            if (savings?.enabled) {
+                const currencyId = String(savings.currencyId ?? "USD").trim().toUpperCase();
+                const capital = Number(savings.capital ?? 0);
+                const usdUyuRateRaw = savings.usdUyuRate == null ? null : Number(savings.usdUyuRate);
+                const usdUyuRate = Number.isFinite(usdUyuRateRaw) && usdUyuRateRaw > 0 ? usdUyuRateRaw : null;
+                if ((currencyId !== "USD" && currencyId !== "UYU") || !Number.isFinite(capital) || capital < 0) {
+                    throw new Error("Invalid savings payload");
+                }
+                const account = await tx.investment.findFirst({
+                    where: { userId, type: "ACCOUNT" },
+                    orderBy: { createdAt: "asc" },
+                });
+                if (account) {
+                    bankAccountId = account.id;
+                    await tx.investment.update({
+                        where: { id: account.id },
+                        data: { currencyId },
+                    });
+                }
+                else {
+                    const accountName = String(savings.accountName ?? "Bank account").trim() || "Bank account";
+                    const created = await tx.investment.create({
+                        data: {
+                            userId,
+                            name: accountName,
+                            type: "ACCOUNT",
+                            currencyId,
+                            targetAnnualReturn: 0,
+                            yieldStartYear: year,
+                            yieldStartMonth: currentMonth,
+                        },
+                    });
+                    bankAccountId = created.id;
+                }
+                if (bankAccountId) {
+                    const capitalUsd = currencyId === "USD"
+                        ? capital
+                        : (0, fx_1.toUsd)({ amount: capital, currencyId: "UYU", usdUyuRate: usdUyuRate ?? Number(process.env.DEFAULT_USD_UYU_RATE ?? 38) }).amountUsd;
+                    await tx.investmentSnapshot.upsert({
+                        where: { investmentId_year_month: { investmentId: bankAccountId, year, month: currentMonth } },
+                        update: { capital, capitalUsd },
+                        create: {
+                            investmentId: bankAccountId,
+                            year,
+                            month: currentMonth,
+                            capital,
+                            capitalUsd,
+                            isClosed: false,
+                        },
+                    });
+                }
+            }
+            const createdInvestments = [];
+            for (const rawInvestment of investments) {
+                const name = String(rawInvestment?.name ?? "").trim();
+                if (!name)
+                    continue;
+                const currencyId = String(rawInvestment?.currencyId ?? "USD").trim().toUpperCase();
+                const capital = Number(rawInvestment?.capital ?? 0);
+                const annualReturn = Number(rawInvestment?.targetAnnualReturn ?? 0);
+                const usdUyuRateRaw = rawInvestment?.usdUyuRate == null ? null : Number(rawInvestment.usdUyuRate);
+                const usdUyuRate = Number.isFinite(usdUyuRateRaw) && usdUyuRateRaw > 0 ? usdUyuRateRaw : null;
+                if ((currencyId !== "USD" && currencyId !== "UYU") || !Number.isFinite(capital) || capital < 0 || !Number.isFinite(annualReturn) || annualReturn < 0) {
+                    throw new Error("Invalid investments payload");
+                }
+                const created = await tx.investment.create({
+                    data: {
+                        userId,
+                        name,
+                        type: "PORTFOLIO",
+                        currencyId,
+                        targetAnnualReturn: annualReturn,
+                        yieldStartYear: year,
+                        yieldStartMonth: currentMonth,
+                    },
+                });
+                createdInvestments.push(created.id);
+                const capitalUsd = currencyId === "USD"
+                    ? capital
+                    : (0, fx_1.toUsd)({ amount: capital, currencyId: "UYU", usdUyuRate: usdUyuRate ?? Number(process.env.DEFAULT_USD_UYU_RATE ?? 38) }).amountUsd;
+                await tx.investmentSnapshot.create({
+                    data: {
+                        investmentId: created.id,
+                        year,
+                        month: currentMonth,
+                        capital,
+                        capitalUsd,
+                        isClosed: false,
+                    },
+                });
+                if (capital > 0) {
+                    await tx.investmentMovement.create({
+                        data: {
+                            investmentId: created.id,
+                            date: new Date(Date.UTC(previousMonthYear, previousMonth - 1, 1, 0, 0, 0)),
+                            type: "deposit",
+                            currencyId,
+                            amount: capital,
+                        },
+                    });
+                }
+            }
+            return {
+                bankAccountId,
+                createdInvestments,
+            };
+        });
+        return res.json({ ok: true, ...result });
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return res.status(400).json({ error: message || "Error finalizing onboarding" });
+    }
+};
+exports.finalizeOnboarding = finalizeOnboarding;

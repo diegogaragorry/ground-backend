@@ -4,6 +4,7 @@ const express_1 = require("express");
 const auth_controller_1 = require("./auth.controller");
 const recovery_controller_1 = require("./recovery.controller");
 const requireAuth_1 = require("../middlewares/requireAuth");
+const requireBillingWriteAccess_1 = require("../middlewares/requireBillingWriteAccess");
 const router = (0, express_1.Router)();
 // ✅ Nuevo flujo de registro con código
 router.post("/register/request-code", auth_controller_1.registerRequestCode);
@@ -15,6 +16,7 @@ router.post("/forgot-password/verify", auth_controller_1.forgotPasswordVerify);
 router.post("/login", auth_controller_1.login);
 router.get("/me", requireAuth_1.requireAuth, auth_controller_1.me);
 router.patch("/me", requireAuth_1.requireAuth, auth_controller_1.patchMe);
+router.post("/me/onboarding/finalize", requireAuth_1.requireAuth, requireBillingWriteAccess_1.requireBillingWriteAccess, auth_controller_1.finalizeOnboarding);
 // Phone (for E2EE recovery)
 router.post("/me/phone/request", requireAuth_1.requireAuth, auth_controller_1.phoneRequest);
 router.post("/me/phone/verify", requireAuth_1.requireAuth, auth_controller_1.phoneVerify);

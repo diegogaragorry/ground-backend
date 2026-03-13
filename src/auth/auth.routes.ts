@@ -3,6 +3,7 @@ import {
   login,
   me,
   patchMe,
+  finalizeOnboarding,
   registerRequestCode,
   registerVerify,
   forgotPasswordRequestCode,
@@ -17,6 +18,7 @@ import {
   recoverySetPassword,
 } from "./recovery.controller";
 import { requireAuth } from "../middlewares/requireAuth";
+import { requireBillingWriteAccess } from "../middlewares/requireBillingWriteAccess";
 
 const router = Router();
 
@@ -32,6 +34,7 @@ router.post("/forgot-password/verify", forgotPasswordVerify);
 router.post("/login", login);
 router.get("/me", requireAuth, me);
 router.patch("/me", requireAuth, patchMe);
+router.post("/me/onboarding/finalize", requireAuth, requireBillingWriteAccess, finalizeOnboarding);
 
 // Phone (for E2EE recovery)
 router.post("/me/phone/request", requireAuth, phoneRequest);
