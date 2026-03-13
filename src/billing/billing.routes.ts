@@ -5,6 +5,7 @@ import {
   getBillingSummary,
   handleDLocalCallback,
   handleDLocalNotification,
+  reactivateCurrentSubscription,
   runRenewalsNow,
   subscribeMonthlyPlan,
   startProEarlyCheckout,
@@ -17,6 +18,7 @@ router.post("/checkout", requireAuth, startProEarlyCheckout);
 router.post("/checkout/pro-early", requireAuth, startProEarlyCheckout);
 router.post("/subscribe", requireAuth, subscribeMonthlyPlan);
 router.post("/cancel", requireAuth, cancelCurrentSubscription);
+router.post("/reactivate", requireAuth, reactivateCurrentSubscription);
 router.post("/renewals/run", requireAuth, runRenewalsNow);
 router.post("/dlocal/notifications", handleDLocalNotification);
 router.post("/dlocal/callback", handleDLocalCallback);

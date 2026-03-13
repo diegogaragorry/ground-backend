@@ -9,6 +9,7 @@ router.post("/checkout", requireAuth_1.requireAuth, billing_controller_1.startPr
 router.post("/checkout/pro-early", requireAuth_1.requireAuth, billing_controller_1.startProEarlyCheckout);
 router.post("/subscribe", requireAuth_1.requireAuth, billing_controller_1.subscribeMonthlyPlan);
 router.post("/cancel", requireAuth_1.requireAuth, billing_controller_1.cancelCurrentSubscription);
+router.post("/reactivate", requireAuth_1.requireAuth, billing_controller_1.reactivateCurrentSubscription);
 router.post("/renewals/run", requireAuth_1.requireAuth, billing_controller_1.runRenewalsNow);
 router.post("/dlocal/notifications", billing_controller_1.handleDLocalNotification);
 router.post("/dlocal/callback", billing_controller_1.handleDLocalCallback);

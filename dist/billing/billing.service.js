@@ -151,6 +151,8 @@ function baseSummary(config) {
         graceEndsAt: null,
         cancelAtPeriodEnd: false,
         canCancelCurrentSubscription: false,
+        canReactivateCurrentSubscription: false,
+        reactivationRequiresCard: false,
         price: {
             amountMinor: config.proEarlyMonthlyUsdMinor,
             currencyCode: "USD",
@@ -177,6 +179,8 @@ function withCurrentSubscription(summary, subscription) {
         canCancelCurrentSubscription: subscription.planCode === client_1.BillingPlanCode.PRO_MONTHLY &&
             subscription.status === client_1.BillingSubscriptionStatus.ACTIVE &&
             !subscription.cancelAtPeriodEnd,
+        canReactivateCurrentSubscription: false,
+        reactivationRequiresCard: false,
         price: {
             amountMinor: subscription.amountMinor,
             currencyCode: "USD",
@@ -210,6 +214,8 @@ function buildBillingSummary(user) {
             isSuperAdminBypass: true,
             offers: [],
             canCancelCurrentSubscription: false,
+            canReactivateCurrentSubscription: false,
+            reactivationRequiresCard: false,
             notes: ["super_admin_bypass"],
         };
     }
@@ -248,12 +254,15 @@ function buildBillingSummary(user) {
             }
             case client_1.BillingSubscriptionStatus.CANCELED: {
                 const stillInPeriod = !!currentSubscription.currentPeriodEndsAt && now <= currentSubscription.currentPeriodEndsAt;
+                const hasSavedCard = !!currentSubscription.providerCardId;
                 return {
                     ...withSubscription,
                     subscriptionStatus: "canceled",
                     accessLevel: stillInPeriod ? "full" : "read_only",
                     nextAction: stillInPeriod ? "manage_subscription" : "start_checkout",
                     offers,
+                    canReactivateCurrentSubscription: stillInPeriod && currentSubscription.planCode === client_1.BillingPlanCode.PRO_MONTHLY,
+                    reactivationRequiresCard: stillInPeriod && currentSubscription.planCode === client_1.BillingPlanCode.PRO_MONTHLY && !hasSavedCard,
                     notes: stillInPeriod ? ["canceled_end_of_period"] : ["canceled_period_ended"],
                 };
             }

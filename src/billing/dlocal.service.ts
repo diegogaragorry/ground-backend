@@ -46,6 +46,16 @@ type CreateRecurringPaymentInput = {
   networkPaymentReference?: string | null;
 };
 
+type CreateSavedCardInput = {
+  country: string;
+  payer: {
+    name: string;
+    email: string;
+    userReference: string;
+  };
+  cardToken: string;
+};
+
 type DLocalPaymentResponse = {
   id?: string;
   payment_id?: string;
@@ -266,6 +276,40 @@ export async function createRecurringPayment(input: CreateRecurringPaymentInput)
   const signature = createRequestSignature(config.xLogin, xDate, bodyText, config.secretKey);
 
   const res = await fetch(`${config.apiBaseUrl}/payments`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Date": xDate,
+      "X-Login": config.xLogin,
+      "X-Trans-Key": config.xTransKey,
+      "X-Version": config.xVersion,
+      "User-Agent": config.userAgent,
+      Authorization: `V2-HMAC-SHA256, Signature: ${signature}`,
+    },
+    body: bodyText,
+  });
+
+  return parseDLocalResponse(res);
+}
+
+export async function createSavedCard(input: CreateSavedCardInput) {
+  const config = ensureReadyConfig();
+  const payload = {
+    country: input.country,
+    payer: {
+      name: input.payer.name,
+      email: input.payer.email,
+      user_reference: input.payer.userReference,
+    },
+    card: {
+      token: input.cardToken,
+    },
+  };
+  const bodyText = JSON.stringify(payload);
+  const xDate = currentXDate();
+  const signature = createRequestSignature(config.xLogin, xDate, bodyText, config.secretKey);
+
+  const res = await fetch(`${config.apiBaseUrl}/secure_cards`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

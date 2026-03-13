@@ -4,6 +4,7 @@ import { prisma } from "../lib/prisma";
 import type { AuthRequest } from "../middlewares/requireAuth";
 import { buildBillingSummary, getBillingConfig, getPlanDurationMonths, pickCurrentSubscription } from "./billing.service";
 import {
+  createSavedCard,
   createSubscriptionPayment,
   createRedirectPayment,
   deleteSavedCard,
@@ -440,6 +441,111 @@ export const cancelCurrentSubscription = async (req: AuthRequest, res: Response)
       payload: {
         cancelAtPeriodEnd: true,
         cardDeleted,
+      },
+      processedAt: new Date(),
+    },
+  });
+
+  const refreshedUser = await loadBillingUser(user.id);
+  return res.json({
+    ok: true,
+    billing: refreshedUser ? buildBillingSummary(refreshedUser) : buildBillingSummary(user),
+  });
+};
+
+export const reactivateCurrentSubscription = async (req: AuthRequest, res: Response) => {
+  const userId = req.userId!;
+  const user = await loadBillingUser(userId);
+  if (!user) return res.status(404).json({ error: "User not found" });
+
+  const currentSubscription = pickCurrentSubscription(user.billingSubscriptions as any);
+  if (!currentSubscription || currentSubscription.planCode !== BillingPlanCode.PRO_MONTHLY) {
+    return res.status(409).json({ error: "There is no monthly subscription to reactivate" });
+  }
+
+  const stillInPeriod = !!currentSubscription.currentPeriodEndsAt && new Date() <= currentSubscription.currentPeriodEndsAt;
+  if (!stillInPeriod) {
+    return res.status(409).json({ error: "The current subscription period already ended" });
+  }
+
+  if (!currentSubscription.cancelAtPeriodEnd) {
+    const refreshedUser = await loadBillingUser(user.id);
+    return res.json({
+      ok: true,
+      billing: refreshedUser ? buildBillingSummary(refreshedUser) : buildBillingSummary(user),
+    });
+  }
+
+  const metadata =
+    currentSubscription.metadata && typeof currentSubscription.metadata === "object"
+      ? (currentSubscription.metadata as Record<string, unknown>)
+      : {};
+  let nextProviderCardId = currentSubscription.providerCardId;
+  let nextCardLast4 = metadata.cardLast4 ?? null;
+
+  if (!nextProviderCardId) {
+    const cardToken = String(req.body?.cardToken ?? "").trim();
+    if (!cardToken) {
+      return res.status(400).json({ error: "Card token is required to reactivate renewal" });
+    }
+    const country = normalizeCountryCode(user.country);
+    if (!country) {
+      return res.status(400).json({ error: "User country is required to reactivate renewal" });
+    }
+    const fullName = [String(user.firstName ?? "").trim(), String(user.lastName ?? "").trim()].filter(Boolean).join(" ") || user.email;
+    const savedCard = await createSavedCard({
+      country,
+      payer: {
+        name: fullName,
+        email: user.email,
+        userReference: user.id,
+      },
+      cardToken,
+    });
+    nextProviderCardId = extractProviderCardId(savedCard);
+    nextCardLast4 = extractCardLastFour(savedCard) || nextCardLast4;
+    if (!nextProviderCardId) {
+      return res.status(502).json({ error: "dLocal did not return a saved card id" });
+    }
+    await prisma.billingEvent.create({
+      data: {
+        userId: user.id,
+        billingSubscriptionId: currentSubscription.id,
+        provider: BillingProvider.DLOCAL,
+        eventType: "dlocal_card_saved_for_reactivation",
+        externalId: nextProviderCardId,
+        payload: savedCard as any,
+        processedAt: new Date(),
+      },
+    });
+  }
+
+  await prisma.billingSubscription.update({
+    where: { id: currentSubscription.id },
+    data: {
+      status: BillingSubscriptionStatus.ACTIVE,
+      cancelAtPeriodEnd: false,
+      canceledAt: null,
+      endedAt: null,
+      providerCardId: nextProviderCardId,
+      metadata: {
+        ...metadata,
+        cardLast4: nextCardLast4,
+        reactivatedAt: new Date().toISOString(),
+        cancelRequestedAt: null,
+      } as any,
+    },
+  });
+
+  await prisma.billingEvent.create({
+    data: {
+      userId: user.id,
+      billingSubscriptionId: currentSubscription.id,
+      provider: BillingProvider.DLOCAL,
+      eventType: "subscription_reactivated",
+      payload: {
+        reactivatedAt: new Date().toISOString(),
+        savedCardRestored: !!nextProviderCardId,
       },
       processedAt: new Date(),
     },
