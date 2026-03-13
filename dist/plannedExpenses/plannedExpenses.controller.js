@@ -486,16 +486,14 @@ const confirmPlannedExpensesBatch = async (req, res) => {
         })
         : [];
     const categoryExpenseTypeMap = new Map(categories.map((c) => [c.id, c.expenseType]));
-    if (categories.length !== categoryIds.length) {
-        return res.status(403).json({ error: "Invalid categoryId for this user" });
-    }
     const plannedMap = new Map(plannedRows.map((row) => [row.id, row]));
-    try {
-        const results = await prisma_1.prisma.$transaction(async (tx) => {
-            const out = [];
-            for (const id of ids) {
-                const item = itemMap.get(id);
-                const base = plannedMap.get(id);
+    const results = [];
+    const failed = [];
+    for (const id of ids) {
+        const item = itemMap.get(id);
+        const base = plannedMap.get(id);
+        try {
+            const result = await prisma_1.prisma.$transaction(async (tx) => {
                 let working = {
                     id: base.id,
                     userId: base.userId,
@@ -513,8 +511,7 @@ const confirmPlannedExpensesBatch = async (req, res) => {
                     expense: base.expense ?? null,
                 };
                 if (working.isConfirmed && working.expense?.id) {
-                    out.push({ id, expenseId: working.expense.id, alreadyConfirmed: true });
-                    continue;
+                    return { id, expenseId: working.expense.id, alreadyConfirmed: true };
                 }
                 const patch = item.patch && Object.keys(item.patch).length > 0
                     ? buildPlannedPatchData(working, item.patch, categoryExpenseTypeMap)
@@ -538,8 +535,7 @@ const confirmPlannedExpensesBatch = async (req, res) => {
                         where: { id },
                         data: { isConfirmed: true },
                     });
-                    out.push({ id, expenseId: existingExpense.id, alreadyConfirmed: true });
-                    continue;
+                    return { id, expenseId: existingExpense.id, alreadyConfirmed: true };
                 }
                 const { currencyId, amount, amountUsd, usdUyuRate, hasEncrypted } = buildConfirmExpenseData(working, item.usdUyuRate);
                 const date = new Date(Date.UTC(working.year, working.month, 0, 12, 0, 0));
@@ -562,16 +558,21 @@ const confirmPlannedExpensesBatch = async (req, res) => {
                     where: { id },
                     data: { isConfirmed: true },
                 });
-                out.push({ id, expenseId: exp.id });
-            }
-            return out;
-        });
-        return res.status(201).json({ count: results.length, rows: results });
+                return { id, expenseId: exp.id };
+            });
+            results.push(result);
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            failed.push({ id, error: message || "Error confirming draft" });
+        }
     }
-    catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return res.status(400).json({ error: message || "Error confirming drafts" });
-    }
+    return res.status(failed.length > 0 ? 200 : 201).json({
+        count: results.length,
+        failedCount: failed.length,
+        rows: results,
+        failed,
+    });
 };
 exports.confirmPlannedExpensesBatch = confirmPlannedExpensesBatch;
 /**
