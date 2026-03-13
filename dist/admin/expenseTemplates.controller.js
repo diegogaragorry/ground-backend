@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.setVisibilityToSelected = exports.deleteExpenseTemplate = exports.updateExpenseTemplate = exports.createExpenseTemplate = exports.listExpenseTemplates = void 0;
+exports.setVisibilityToSelected = exports.deleteExpenseTemplate = exports.updateExpenseTemplate = exports.upsertExpenseTemplatesBatch = exports.createExpenseTemplate = exports.listExpenseTemplates = void 0;
 exports.serverYear = serverYear;
 exports.openMonthsForYear = openMonthsForYear;
 exports.ensurePlannedForTemplate = ensurePlannedForTemplate;
@@ -90,6 +90,49 @@ async function syncPlannedAfterTemplateUpdate(userId, year, template, startMonth
             ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
         },
     });
+}
+async function syncPlannedForTemplatesBatch(tx, userId, year, templates, monthsOpen) {
+    if (!templates.length || !monthsOpen.length)
+        return;
+    const createRows = [];
+    for (const template of templates) {
+        for (const month of monthsOpen) {
+            createRows.push({
+                userId,
+                year,
+                month,
+                templateId: template.id,
+                expenseType: template.expenseType,
+                categoryId: template.categoryId,
+                description: template.description,
+                amountUsd: template.defaultAmountUsd ?? null,
+                isConfirmed: false,
+                ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
+            });
+        }
+    }
+    await tx.plannedExpense.createMany({
+        data: createRows,
+        skipDuplicates: true,
+    });
+    for (const template of templates) {
+        await tx.plannedExpense.updateMany({
+            where: {
+                userId,
+                year,
+                month: { in: monthsOpen },
+                templateId: template.id,
+                isConfirmed: false,
+            },
+            data: {
+                expenseType: template.expenseType,
+                categoryId: template.categoryId,
+                description: template.description,
+                amountUsd: template.defaultAmountUsd ?? null,
+                ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
+            },
+        });
+    }
 }
 // GET /admin/expenseTemplates
 const listExpenseTemplates = async (req, res) => {
@@ -227,6 +270,112 @@ const createExpenseTemplate = async (req, res) => {
     }
 };
 exports.createExpenseTemplate = createExpenseTemplate;
+// POST /admin/expenseTemplates/batch
+// Body: { startMonth?: number, templates: Array<{ categoryId, description, defaultAmountUsd, defaultCurrencyId?, showInExpenses? }> }
+const upsertExpenseTemplatesBatch = async (req, res) => {
+    const userId = req.userId;
+    const rawTemplates = req.body?.templates;
+    if (!Array.isArray(rawTemplates) || rawTemplates.length === 0) {
+        return res.status(400).json({ error: "templates array is required" });
+    }
+    const normalizedMap = new Map();
+    for (const raw of rawTemplates) {
+        const categoryId = String(raw?.categoryId ?? "").trim();
+        const description = String(raw?.description ?? "").trim();
+        if (!categoryId || !description) {
+            return res.status(400).json({ error: "categoryId and description are required for each template" });
+        }
+        const defaultAmountUsd = parseAmountUsd(raw?.defaultAmountUsd);
+        const defaultCurrencyId = String(raw?.defaultCurrencyId ?? "USD").trim().toUpperCase() || "USD";
+        if (defaultCurrencyId !== "USD" && defaultCurrencyId !== "UYU") {
+            return res.status(400).json({ error: "defaultCurrencyId must be USD or UYU" });
+        }
+        normalizedMap.set(`${categoryId}::${description}`, {
+            categoryId,
+            description,
+            defaultAmountUsd,
+            defaultCurrencyId,
+            showInExpenses: raw?.showInExpenses !== false,
+        });
+    }
+    const normalized = [...normalizedMap.values()];
+    const categoryIds = [...new Set(normalized.map((t) => t.categoryId))];
+    const startMonth = clampStartMonth(req.body?.startMonth);
+    const year = serverYear();
+    const monthsOpen = (await openMonthsForYear(userId, year)).filter((m) => m >= startMonth);
+    const [cats, existingTemplates] = await Promise.all([
+        prisma_1.prisma.category.findMany({
+            where: { userId, id: { in: categoryIds } },
+            select: { id: true, expenseType: true },
+        }),
+        prisma_1.prisma.expenseTemplate.findMany({
+            where: { userId, categoryId: { in: categoryIds } },
+            include: { category: true },
+        }),
+    ]);
+    if (cats.length !== categoryIds.length) {
+        return res.status(403).json({ error: "Invalid categoryId for this user" });
+    }
+    const categoryMap = new Map(cats.map((c) => [c.id, c]));
+    const existingMap = new Map(existingTemplates.map((t) => [`${t.categoryId}::${t.description}`, t]));
+    try {
+        const rows = await prisma_1.prisma.$transaction(async (tx) => {
+            const touched = [];
+            for (const template of normalized) {
+                const cat = categoryMap.get(template.categoryId);
+                const existing = existingMap.get(`${template.categoryId}::${template.description}`);
+                if (existing) {
+                    const updated = await tx.expenseTemplate.update({
+                        where: { id: existing.id },
+                        data: {
+                            defaultAmountUsd: template.defaultAmountUsd,
+                            defaultCurrencyId: template.defaultCurrencyId,
+                            showInExpenses: template.showInExpenses,
+                        },
+                        include: { category: true },
+                    });
+                    touched.push(updated);
+                    existingMap.set(`${template.categoryId}::${template.description}`, updated);
+                    continue;
+                }
+                const created = await tx.expenseTemplate.create({
+                    data: {
+                        userId,
+                        expenseType: cat.expenseType,
+                        categoryId: template.categoryId,
+                        description: template.description,
+                        defaultAmountUsd: template.defaultAmountUsd,
+                        defaultCurrencyId: template.defaultCurrencyId,
+                        showInExpenses: template.showInExpenses,
+                    },
+                    include: { category: true },
+                });
+                touched.push(created);
+                existingMap.set(`${template.categoryId}::${template.description}`, created);
+            }
+            await syncPlannedForTemplatesBatch(tx, userId, year, touched
+                .filter((template) => template.showInExpenses !== false)
+                .map((template) => ({
+                id: template.id,
+                expenseType: template.expenseType,
+                categoryId: template.categoryId,
+                description: template.description,
+                defaultAmountUsd: template.defaultAmountUsd ?? null,
+                encryptedPayload: template.encryptedPayload ?? undefined,
+            })), monthsOpen);
+            return touched;
+        });
+        return res.json({ rows });
+    }
+    catch (e) {
+        const msg = String(e?.message ?? "");
+        if (msg.toLowerCase().includes("unique")) {
+            return res.status(409).json({ error: "Template already exists (unique constraint)" });
+        }
+        return res.status(500).json({ error: e?.message ?? "Error upserting templates" });
+    }
+};
+exports.upsertExpenseTemplatesBatch = upsertExpenseTemplatesBatch;
 // PUT /admin/expenseTemplates/:id
 // Opción A: si cambia categoryId => expenseType se setea al de esa category
 const updateExpenseTemplate = async (req, res) => {

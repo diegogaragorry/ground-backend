@@ -1,6 +1,7 @@
 // src/admin/expenseTemplates.controller.ts
 import { randomUUID } from "crypto";
 import { Response } from "express";
+import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import type { AuthRequest } from "../middlewares/requireAuth";
 import { toUsd } from "../utils/fx";
@@ -106,6 +107,79 @@ async function syncPlannedAfterTemplateUpdate(
       ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
     },
   });
+}
+
+type TemplateSyncShape = {
+  id: string;
+  expenseType: any;
+  categoryId: string;
+  description: string;
+  defaultAmountUsd: number | null;
+  encryptedPayload?: string | null;
+};
+
+async function syncPlannedForTemplatesBatch(
+  tx: Prisma.TransactionClient,
+  userId: string,
+  year: number,
+  templates: TemplateSyncShape[],
+  monthsOpen: number[]
+) {
+  if (!templates.length || !monthsOpen.length) return;
+
+  const createRows: Array<{
+    userId: string;
+    year: number;
+    month: number;
+    templateId: string;
+    expenseType: any;
+    categoryId: string;
+    description: string;
+    amountUsd: number | null;
+    isConfirmed: boolean;
+    encryptedPayload?: string;
+  }> = [];
+
+  for (const template of templates) {
+    for (const month of monthsOpen) {
+      createRows.push({
+        userId,
+        year,
+        month,
+        templateId: template.id,
+        expenseType: template.expenseType,
+        categoryId: template.categoryId,
+        description: template.description,
+        amountUsd: template.defaultAmountUsd ?? null,
+        isConfirmed: false,
+        ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
+      });
+    }
+  }
+
+  await tx.plannedExpense.createMany({
+    data: createRows,
+    skipDuplicates: true,
+  });
+
+  for (const template of templates) {
+    await tx.plannedExpense.updateMany({
+      where: {
+        userId,
+        year,
+        month: { in: monthsOpen },
+        templateId: template.id,
+        isConfirmed: false,
+      },
+      data: {
+        expenseType: template.expenseType,
+        categoryId: template.categoryId,
+        description: template.description,
+        amountUsd: template.defaultAmountUsd ?? null,
+        ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
+      },
+    });
+  }
 }
 
 // GET /admin/expenseTemplates
@@ -246,6 +320,135 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
       return res.status(409).json({ error: "Template already exists (unique constraint)" });
     }
     return res.status(500).json({ error: e?.message ?? "Error creating template" });
+  }
+};
+
+// POST /admin/expenseTemplates/batch
+// Body: { startMonth?: number, templates: Array<{ categoryId, description, defaultAmountUsd, defaultCurrencyId?, showInExpenses? }> }
+export const upsertExpenseTemplatesBatch = async (req: AuthRequest, res: Response) => {
+  const userId = req.userId!;
+  const rawTemplates = req.body?.templates;
+  if (!Array.isArray(rawTemplates) || rawTemplates.length === 0) {
+    return res.status(400).json({ error: "templates array is required" });
+  }
+
+  const normalizedMap = new Map<string, {
+    categoryId: string;
+    description: string;
+    defaultAmountUsd: number | null;
+    defaultCurrencyId: string;
+    showInExpenses: boolean;
+  }>();
+
+  for (const raw of rawTemplates) {
+    const categoryId = String(raw?.categoryId ?? "").trim();
+    const description = String(raw?.description ?? "").trim();
+    if (!categoryId || !description) {
+      return res.status(400).json({ error: "categoryId and description are required for each template" });
+    }
+    const defaultAmountUsd = parseAmountUsd(raw?.defaultAmountUsd);
+    const defaultCurrencyId = String(raw?.defaultCurrencyId ?? "USD").trim().toUpperCase() || "USD";
+    if (defaultCurrencyId !== "USD" && defaultCurrencyId !== "UYU") {
+      return res.status(400).json({ error: "defaultCurrencyId must be USD or UYU" });
+    }
+    normalizedMap.set(`${categoryId}::${description}`, {
+      categoryId,
+      description,
+      defaultAmountUsd,
+      defaultCurrencyId,
+      showInExpenses: raw?.showInExpenses !== false,
+    });
+  }
+
+  const normalized = [...normalizedMap.values()];
+  const categoryIds = [...new Set(normalized.map((t) => t.categoryId))];
+  const startMonth = clampStartMonth(req.body?.startMonth);
+  const year = serverYear();
+  const monthsOpen = (await openMonthsForYear(userId, year)).filter((m) => m >= startMonth);
+
+  const [cats, existingTemplates] = await Promise.all([
+    prisma.category.findMany({
+      where: { userId, id: { in: categoryIds } },
+      select: { id: true, expenseType: true },
+    }),
+    prisma.expenseTemplate.findMany({
+      where: { userId, categoryId: { in: categoryIds } },
+      include: { category: true },
+    }),
+  ]);
+
+  if (cats.length !== categoryIds.length) {
+    return res.status(403).json({ error: "Invalid categoryId for this user" });
+  }
+
+  const categoryMap = new Map(cats.map((c) => [c.id, c]));
+  const existingMap = new Map(existingTemplates.map((t) => [`${t.categoryId}::${t.description}`, t]));
+
+  try {
+    const rows = await prisma.$transaction(async (tx) => {
+      const touched: any[] = [];
+
+      for (const template of normalized) {
+        const cat = categoryMap.get(template.categoryId)!;
+        const existing = existingMap.get(`${template.categoryId}::${template.description}`);
+        if (existing) {
+          const updated = await tx.expenseTemplate.update({
+            where: { id: existing.id },
+            data: {
+              defaultAmountUsd: template.defaultAmountUsd,
+              defaultCurrencyId: template.defaultCurrencyId,
+              showInExpenses: template.showInExpenses,
+            },
+            include: { category: true },
+          });
+          touched.push(updated);
+          existingMap.set(`${template.categoryId}::${template.description}`, updated as any);
+          continue;
+        }
+
+        const created = await tx.expenseTemplate.create({
+          data: {
+            userId,
+            expenseType: cat.expenseType,
+            categoryId: template.categoryId,
+            description: template.description,
+            defaultAmountUsd: template.defaultAmountUsd,
+            defaultCurrencyId: template.defaultCurrencyId,
+            showInExpenses: template.showInExpenses,
+          },
+          include: { category: true },
+        });
+        touched.push(created);
+        existingMap.set(`${template.categoryId}::${template.description}`, created as any);
+      }
+
+      await syncPlannedForTemplatesBatch(
+        tx,
+        userId,
+        year,
+        touched
+          .filter((template) => template.showInExpenses !== false)
+          .map((template) => ({
+            id: template.id,
+            expenseType: template.expenseType,
+            categoryId: template.categoryId,
+            description: template.description,
+            defaultAmountUsd: template.defaultAmountUsd ?? null,
+            encryptedPayload: template.encryptedPayload ?? undefined,
+          })),
+        monthsOpen
+      );
+
+      return touched;
+    });
+
+    return res.json({ rows });
+  } catch (e: any) {
+    const msg = String(e?.message ?? "");
+    if (msg.toLowerCase().includes("unique")) {
+      return res.status(409).json({ error: "Template already exists (unique constraint)" });
+    }
+    return res.status(500).json({ error: e?.message ?? "Error upserting templates" });
   }
 };
 
