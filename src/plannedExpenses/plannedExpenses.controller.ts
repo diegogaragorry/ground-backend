@@ -51,6 +51,132 @@ function parseUsdUyuRate(v: any) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+type PlannedExpenseForConfirm = {
+  id: string;
+  userId: string;
+  year: number;
+  month: number;
+  expenseType: "FIXED" | "VARIABLE";
+  categoryId: string;
+  description: string;
+  amountUsd: number | null;
+  amount: number | null;
+  usdUyuRate: number | null;
+  isConfirmed: boolean;
+  encryptedPayload: string | null;
+  template: { defaultCurrencyId?: string | null } | null;
+  expense?: { id: string } | null;
+};
+
+function buildPlannedPatchData(
+  pe: PlannedExpenseForConfirm,
+  body: any,
+  categoryExpenseTypeMap: Map<string, "FIXED" | "VARIABLE">
+) {
+  const patch: any = {};
+  const hasEncrypted = typeof body?.encryptedPayload === "string" && body.encryptedPayload.length > 0;
+
+  if (hasEncrypted) {
+    patch.encryptedPayload = body.encryptedPayload;
+    patch.description = encryptedPlaceholder();
+    patch.amountUsd = 0;
+    patch.amount = 0;
+  } else {
+    const isUyu = pe.template?.defaultCurrencyId === "UYU";
+
+    if (body?.amountUsd !== undefined) {
+      patch.amountUsd = parseAmountUsd(body.amountUsd);
+    }
+
+    if (isUyu) {
+      const amountVal = parseAmount(body?.amount);
+      const rateVal = parseUsdUyuRate(body?.usdUyuRate);
+      if (amountVal != null && rateVal != null) {
+        patch.amount = amountVal;
+        patch.usdUyuRate = rateVal;
+        patch.amountUsd = Math.round((amountVal / rateVal) * 100) / 100;
+      } else if (amountVal != null || rateVal != null) {
+        throw new Error("For UYU, provide both amount and usdUyuRate together");
+      }
+    }
+
+    if (body?.description != null) {
+      const d = String(body.description ?? "").trim();
+      if (!d) throw new Error("description is required");
+      patch.description = d;
+    }
+  }
+
+  if (body?.categoryId != null) {
+    const categoryId = String(body.categoryId ?? "");
+    if (!categoryId) throw new Error("categoryId is required");
+    const expenseType = categoryExpenseTypeMap.get(categoryId);
+    if (!expenseType) throw new Error("Invalid categoryId for this user");
+    patch.categoryId = categoryId;
+    patch.expenseType = expenseType;
+  }
+
+  return patch;
+}
+
+function buildConfirmExpenseData(
+  pe: PlannedExpenseForConfirm,
+  confirmUsdUyuRate?: unknown
+): {
+  currencyId: "USD" | "UYU";
+  amount: number;
+  amountUsd: number;
+  usdUyuRate: number | null;
+  hasEncrypted: boolean;
+} {
+  const hasEncrypted = typeof pe.encryptedPayload === "string" && pe.encryptedPayload.length > 0;
+  let amountUsd = Number(pe.amountUsd ?? 0);
+  if (!hasEncrypted && (!Number.isFinite(amountUsd) || amountUsd <= 0)) {
+    throw new Error("amountUsd must be > 0 to confirm");
+  }
+
+  const isUyu = pe.template?.defaultCurrencyId === "UYU";
+  let currencyId: "USD" | "UYU" = "USD";
+  let amount = amountUsd;
+  let usdUyuRate: number | null = null;
+
+  if (hasEncrypted) {
+    currencyId = isUyu ? "UYU" : "USD";
+    amount = Number.isFinite(pe.amount) && Number(pe.amount) > 0 ? Math.round(Number(pe.amount)) : 0;
+    amountUsd = Number.isFinite(amountUsd) && amountUsd > 0 ? amountUsd : 0;
+
+    const bodyRate = Number(confirmUsdUyuRate);
+    const peRate = Number(pe.usdUyuRate);
+    usdUyuRate =
+      currencyId === "UYU" && Number.isFinite(peRate) && peRate > 0
+        ? peRate
+        : currencyId === "UYU" && Number.isFinite(bodyRate) && bodyRate > 0
+          ? bodyRate
+          : null;
+  } else if (isUyu) {
+    const peAmount = pe.amount;
+    const peRate = pe.usdUyuRate;
+    const bodyRate = Number(confirmUsdUyuRate);
+    const rate =
+      peAmount != null && peRate != null && Number.isFinite(peAmount) && Number.isFinite(peRate) && peRate > 0
+        ? peRate
+        : Number.isFinite(bodyRate) && bodyRate > 0
+          ? bodyRate
+          : NaN;
+    if (!Number.isFinite(rate) || rate <= 0) {
+      throw new Error("usdUyuRate is required and must be > 0 when the template is in UYU");
+    }
+    currencyId = "UYU";
+    amount = peAmount != null && Number.isFinite(peAmount) && peAmount > 0 ? Math.round(peAmount) : Math.round(amountUsd * rate);
+    usdUyuRate = rate;
+    if (peAmount != null && Number.isFinite(peAmount) && peAmount > 0) {
+      amountUsd = Math.round((peAmount / rate) * 100) / 100;
+    }
+  }
+
+  return { currencyId, amount, amountUsd, usdUyuRate, hasEncrypted };
+}
+
 async function openMonthsForYear(userId: string, year: number) {
   const closes = await prisma.monthClose.findMany({
     where: { userId, year, isClosed: true },
@@ -370,6 +496,168 @@ export const confirmPlannedExpense = async (req: AuthRequest, res: Response) => 
   });
 
   res.status(201).json({ expenseId });
+};
+
+/**
+ * POST /plannedExpenses/confirm-batch
+ * Body: { items: Array<{ id, patch?, usdUyuRate? }> }
+ * Applies pending draft edits and confirms all rows in one request.
+ */
+export const confirmPlannedExpensesBatch = async (req: AuthRequest, res: Response) => {
+  const userId = req.userId!;
+  const rawItems = Array.isArray(req.body?.items) ? req.body.items : null;
+  if (!rawItems || rawItems.length === 0) {
+    return res.status(400).json({ error: "items array is required" });
+  }
+
+  const itemMap = new Map<string, { patch: Record<string, unknown> | null; usdUyuRate?: unknown }>();
+  for (const raw of rawItems) {
+    const id = String(raw?.id ?? "").trim();
+    if (!id) return res.status(400).json({ error: "Each item requires an id" });
+    const patch =
+      raw?.patch && typeof raw.patch === "object" && !Array.isArray(raw.patch)
+        ? (raw.patch as Record<string, unknown>)
+        : null;
+    itemMap.set(id, { patch, usdUyuRate: raw?.usdUyuRate });
+  }
+
+  const ids = [...itemMap.keys()];
+  const plannedRows = await prisma.plannedExpense.findMany({
+    where: { userId, id: { in: ids } },
+    include: { expense: { select: { id: true } }, template: { select: { defaultCurrencyId: true } } },
+  });
+  if (plannedRows.length !== ids.length) {
+    return res.status(404).json({ error: "One or more drafts were not found" });
+  }
+
+  const periods = new Map<string, { year: number; month: number }>();
+  for (const row of plannedRows) periods.set(`${row.year}-${row.month}`, { year: row.year, month: row.month });
+  const periodFilters = [...periods.values()];
+  const closed = await prisma.monthClose.findFirst({
+    where: {
+      userId,
+      isClosed: true,
+      OR: periodFilters.map((p) => ({ year: p.year, month: p.month })),
+    },
+    select: { year: true, month: true },
+  });
+  if (closed) {
+    return res.status(409).json({ error: "Month is closed. Planned expenses cannot be confirmed." });
+  }
+
+  const categoryIds = [...new Set(
+    [...itemMap.values()]
+      .map((item) => item.patch?.categoryId)
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+  )];
+  const categories = categoryIds.length > 0
+    ? await prisma.category.findMany({
+        where: { userId, id: { in: categoryIds } },
+        select: { id: true, expenseType: true },
+      })
+    : [];
+  const categoryExpenseTypeMap = new Map(categories.map((c) => [c.id, c.expenseType]));
+  if (categories.length !== categoryIds.length) {
+    return res.status(403).json({ error: "Invalid categoryId for this user" });
+  }
+
+  const plannedMap = new Map(plannedRows.map((row) => [row.id, row]));
+
+  try {
+    const results = await prisma.$transaction(async (tx) => {
+      const out: Array<{ id: string; expenseId: string; alreadyConfirmed?: boolean }> = [];
+
+      for (const id of ids) {
+        const item = itemMap.get(id)!;
+        const base = plannedMap.get(id)!;
+        let working: PlannedExpenseForConfirm = {
+          id: base.id,
+          userId: base.userId,
+          year: base.year,
+          month: base.month,
+          expenseType: base.expenseType,
+          categoryId: base.categoryId,
+          description: base.description,
+          amountUsd: base.amountUsd ?? null,
+          amount: (base as any).amount ?? null,
+          usdUyuRate: (base as any).usdUyuRate ?? null,
+          isConfirmed: base.isConfirmed,
+          encryptedPayload: base.encryptedPayload ?? null,
+          template: base.template ?? null,
+          expense: base.expense ?? null,
+        };
+
+        if (working.isConfirmed && working.expense?.id) {
+          out.push({ id, expenseId: working.expense.id, alreadyConfirmed: true });
+          continue;
+        }
+
+        const patch = item.patch && Object.keys(item.patch).length > 0
+          ? buildPlannedPatchData(working, item.patch, categoryExpenseTypeMap)
+          : null;
+
+        if (patch && Object.keys(patch).length > 0) {
+          await tx.plannedExpense.update({
+            where: { id },
+            data: patch,
+          });
+          working = {
+            ...working,
+            ...patch,
+          };
+        }
+
+        const existingExpense = await tx.expense.findUnique({
+          where: { plannedExpenseId: id },
+          select: { id: true },
+        });
+        if (existingExpense?.id) {
+          await tx.plannedExpense.update({
+            where: { id },
+            data: { isConfirmed: true },
+          });
+          out.push({ id, expenseId: existingExpense.id, alreadyConfirmed: true });
+          continue;
+        }
+
+        const { currencyId, amount, amountUsd, usdUyuRate, hasEncrypted } = buildConfirmExpenseData(
+          working,
+          item.usdUyuRate
+        );
+        const date = new Date(Date.UTC(working.year, working.month, 0, 12, 0, 0));
+
+        const exp = await tx.expense.create({
+          data: {
+            userId,
+            categoryId: working.categoryId,
+            currencyId,
+            description: working.description,
+            amount,
+            amountUsd,
+            usdUyuRate,
+            date,
+            expenseType: working.expenseType,
+            plannedExpenseId: id,
+            ...(hasEncrypted ? { encryptedPayload: working.encryptedPayload ?? undefined } : {}),
+          },
+        });
+
+        await tx.plannedExpense.update({
+          where: { id },
+          data: { isConfirmed: true },
+        });
+
+        out.push({ id, expenseId: exp.id });
+      }
+
+      return out;
+    });
+
+    return res.status(201).json({ count: results.length, rows: results });
+  } catch (err: any) {
+    const message = err instanceof Error ? err.message : String(err);
+    return res.status(400).json({ error: message || "Error confirming drafts" });
+  }
 };
 
 /**
