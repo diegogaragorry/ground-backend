@@ -41,6 +41,7 @@ type BillingUser = {
     providerSubscriptionId: string | null;
     providerPaymentMethodId: string | null;
     providerCardId: string | null;
+    metadata?: unknown;
     createdAt: Date;
     updatedAt: Date;
   }>;
@@ -63,6 +64,11 @@ export type BillingSummary = {
   integrationReady: boolean;
   checkoutReady: boolean;
   customerPortalReady: boolean;
+  smartFields: {
+    ready: boolean;
+    key: string | null;
+    environment: "sandbox" | "production";
+  };
   planCode: BillingPlanCode;
   subscriptionStatus: BillingSummaryStatus;
   accessLevel: AccessLevel;
@@ -71,6 +77,7 @@ export type BillingSummary = {
   planEndsAt: string | null;
   graceEndsAt: string | null;
   cancelAtPeriodEnd: boolean;
+  canCancelCurrentSubscription: boolean;
   price: {
     amountMinor: number;
     currencyCode: "USD";
@@ -94,6 +101,9 @@ type BillingConfig = {
   checkoutReady: boolean;
   checkoutAllowedEmails: string[];
   customerPortalReady: boolean;
+  smartFieldsReady: boolean;
+  smartFieldsKey: string | null;
+  smartFieldsEnvironment: "sandbox" | "production";
   earlyStageMonths: number;
   graceDays: number;
   proEarlyMonthlyUsdMinor: number;
@@ -141,19 +151,29 @@ export function getBillingConfig(): BillingConfig {
   const proEarlyMonthlyUsdMinor = readPositiveIntEnv("BILLING_PRO_EARLY_MONTHLY_USD_MINOR", 399);
   const defaultAnnual = proEarlyMonthlyUsdMinor * 12;
   const checkoutAllowedEmails = readEmailListEnv("BILLING_CHECKOUT_ALLOWED_EMAILS");
+  const smartFieldsKey =
+    String(process.env.DLOCAL_SMARTFIELDS_KEY ?? process.env.DLOCAL_SMART_FIELDS_KEY ?? process.env.DLOCAL_X_LOGIN ?? "").trim() || null;
+  const smartFieldsEnvironment =
+    String(process.env.DLOCAL_API_BASE_URL ?? "").trim().includes("sandbox") || process.env.NODE_ENV !== "production"
+      ? "sandbox"
+      : "production";
   const integrationReady = !!(
     String(process.env.DLOCAL_X_LOGIN ?? "").trim() &&
     String(process.env.DLOCAL_X_TRANS_KEY ?? "").trim() &&
     String(process.env.DLOCAL_SECRET_KEY ?? "").trim()
   );
+  const smartFieldsReady = integrationReady && !!smartFieldsKey;
   const billingEnabled = readBooleanEnv("BILLING_ENABLED", true);
   return {
     provider: BillingProvider.DLOCAL,
     billingEnabled,
     integrationReady,
-    checkoutReady: integrationReady,
+    checkoutReady: smartFieldsReady,
     checkoutAllowedEmails,
     customerPortalReady: false,
+    smartFieldsReady,
+    smartFieldsKey,
+    smartFieldsEnvironment,
     earlyStageMonths: readPositiveIntEnv("BILLING_EARLY_STAGE_MONTHS", 2),
     graceDays: readPositiveIntEnv("BILLING_GRACE_DAYS", 7),
     proEarlyMonthlyUsdMinor,
@@ -192,7 +212,7 @@ function subscriptionPriority(status: BillingSubscriptionStatus) {
   }
 }
 
-function pickCurrentSubscription(subscriptions: BillingSubscription[]) {
+export function pickCurrentSubscription(subscriptions: BillingSubscription[]) {
   if (!subscriptions.length) return null;
   return [...subscriptions].sort((a, b) => {
     const priorityDelta = subscriptionPriority(b.status) - subscriptionPriority(a.status);
@@ -233,6 +253,11 @@ function baseSummary(config: BillingConfig): BillingSummary {
     integrationReady: config.integrationReady,
     checkoutReady: config.checkoutReady,
     customerPortalReady: config.customerPortalReady,
+    smartFields: {
+      ready: config.smartFieldsReady,
+      key: config.smartFieldsKey,
+      environment: config.smartFieldsEnvironment,
+    },
     planCode: BillingPlanCode.EARLY_STAGE,
     subscriptionStatus: "active",
     accessLevel: "full",
@@ -241,6 +266,7 @@ function baseSummary(config: BillingConfig): BillingSummary {
     planEndsAt: null,
     graceEndsAt: null,
     cancelAtPeriodEnd: false,
+    canCancelCurrentSubscription: false,
     price: {
       amountMinor: config.proEarlyMonthlyUsdMinor,
       currencyCode: "USD",
@@ -265,6 +291,10 @@ function withCurrentSubscription(summary: BillingSummary, subscription: BillingS
     planEndsAt: toIsoOrNull(subscription.currentPeriodEndsAt ?? subscription.trialEndsAt ?? subscription.endedAt),
     graceEndsAt: toIsoOrNull(subscription.graceEndsAt),
     cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+    canCancelCurrentSubscription:
+      subscription.planCode === BillingPlanCode.PRO_MONTHLY &&
+      subscription.status === BillingSubscriptionStatus.ACTIVE &&
+      !subscription.cancelAtPeriodEnd,
     price: {
       amountMinor: subscription.amountMinor,
       currencyCode: "USD" as const,
@@ -298,6 +328,7 @@ export function buildBillingSummary(user: BillingUser): BillingSummary {
       nextAction: "none",
       isSuperAdminBypass: true,
       offers: [],
+      canCancelCurrentSubscription: false,
       notes: ["super_admin_bypass"],
     };
   }

@@ -102,6 +102,7 @@ model BillingSubscription {
   providerSubscriptionId  String?
   providerPaymentMethodId String?
   providerCardId          String?
+  renewalLockedAt         DateTime?
   metadata                Json?
   createdAt               DateTime                  @default(now())
   updatedAt               DateTime                  @updatedAt

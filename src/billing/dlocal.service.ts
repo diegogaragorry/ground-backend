@@ -15,6 +15,37 @@ type CreateRedirectPaymentInput = {
   };
 };
 
+type CreateSubscriptionPaymentInput = {
+  amount: number;
+  currency: "USD";
+  country: string;
+  orderId: string;
+  description: string;
+  notificationUrl: string;
+  payer: {
+    name: string;
+    email: string;
+    userReference: string;
+  };
+  cardToken: string;
+};
+
+type CreateRecurringPaymentInput = {
+  amount: number;
+  currency: "USD";
+  country: string;
+  orderId: string;
+  description: string;
+  notificationUrl: string;
+  payer: {
+    name: string;
+    email: string;
+    userReference: string;
+  };
+  cardId: string;
+  networkPaymentReference?: string | null;
+};
+
 type DLocalPaymentResponse = {
   id?: string;
   payment_id?: string;
@@ -163,6 +194,94 @@ export async function createRedirectPayment(input: CreateRedirectPaymentInput) {
   return parseDLocalResponse(res);
 }
 
+export async function createSubscriptionPayment(input: CreateSubscriptionPaymentInput) {
+  const config = ensureReadyConfig();
+  const payload = {
+    amount: input.amount,
+    currency: input.currency,
+    country: input.country,
+    payment_method_id: "CARD",
+    payment_method_flow: "DIRECT",
+    payer: {
+      name: input.payer.name,
+      email: input.payer.email,
+      user_reference: input.payer.userReference,
+    },
+    card: {
+      token: input.cardToken,
+      save: true,
+      stored_credential_type: "SUBSCRIPTION",
+      stored_credential_usage: "FIRST",
+    },
+    order_id: input.orderId,
+    description: input.description,
+    notification_url: input.notificationUrl,
+  };
+  const bodyText = JSON.stringify(payload);
+  const xDate = currentXDate();
+  const signature = createRequestSignature(config.xLogin, xDate, bodyText, config.secretKey);
+
+  const res = await fetch(`${config.apiBaseUrl}/payments`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Date": xDate,
+      "X-Login": config.xLogin,
+      "X-Trans-Key": config.xTransKey,
+      "X-Version": config.xVersion,
+      "User-Agent": config.userAgent,
+      Authorization: `V2-HMAC-SHA256, Signature: ${signature}`,
+    },
+    body: bodyText,
+  });
+
+  return parseDLocalResponse(res);
+}
+
+export async function createRecurringPayment(input: CreateRecurringPaymentInput) {
+  const config = ensureReadyConfig();
+  const payload = {
+    amount: input.amount,
+    currency: input.currency,
+    country: input.country,
+    payment_method_id: "CARD",
+    payment_method_flow: "DIRECT",
+    payer: {
+      name: input.payer.name,
+      email: input.payer.email,
+      user_reference: input.payer.userReference,
+    },
+    card: {
+      card_id: input.cardId,
+      stored_credential_type: "SUBSCRIPTION",
+      stored_credential_usage: "USED",
+      ...(input.networkPaymentReference ? { network_payment_reference: input.networkPaymentReference } : {}),
+    },
+    order_id: input.orderId,
+    description: input.description,
+    notification_url: input.notificationUrl,
+  };
+  const bodyText = JSON.stringify(payload);
+  const xDate = currentXDate();
+  const signature = createRequestSignature(config.xLogin, xDate, bodyText, config.secretKey);
+
+  const res = await fetch(`${config.apiBaseUrl}/payments`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Date": xDate,
+      "X-Login": config.xLogin,
+      "X-Trans-Key": config.xTransKey,
+      "X-Version": config.xVersion,
+      "User-Agent": config.userAgent,
+      Authorization: `V2-HMAC-SHA256, Signature: ${signature}`,
+    },
+    body: bodyText,
+  });
+
+  return parseDLocalResponse(res);
+}
+
 export function extractPaymentId(payload: unknown) {
   return readStringField(payload, [
     ["id"],
@@ -192,7 +311,14 @@ export function extractOrderId(payload: unknown) {
 }
 
 export function extractProviderCardId(payload: unknown) {
-  return readStringField(payload, [["card_id"], ["card", "card_id"], ["payment", "card_id"], ["payment", "card", "card_id"]]);
+  return readStringField(payload, [
+    ["card_id"],
+    ["card", "card_id"],
+    ["card", "id"],
+    ["payment", "card_id"],
+    ["payment", "card", "card_id"],
+    ["payment", "card", "id"],
+  ]);
 }
 
 export function extractProviderPaymentMethodId(payload: unknown) {
@@ -208,6 +334,24 @@ export function extractProviderCustomerId(payload: unknown) {
   return readStringField(payload, [
     ["payer", "id"],
     ["payment", "payer", "id"],
+  ]);
+}
+
+export function extractNetworkPaymentReference(payload: unknown) {
+  return readStringField(payload, [
+    ["network_payment_reference"],
+    ["card", "network_payment_reference"],
+    ["payment", "network_payment_reference"],
+    ["payment", "card", "network_payment_reference"],
+  ]);
+}
+
+export function extractCardLastFour(payload: unknown) {
+  return readStringField(payload, [
+    ["card", "last4"],
+    ["payment", "card", "last4"],
+    ["payment_method", "last4"],
+    ["payment", "payment_method", "last4"],
   ]);
 }
 
@@ -230,6 +374,43 @@ export async function getPaymentStatus(paymentId: string) {
   });
 
   return parseDLocalResponse(res);
+}
+
+export async function deleteSavedCard(cardId: string) {
+  const config = ensureReadyConfig();
+  const bodyText = "";
+  const xDate = currentXDate();
+  const signature = createRequestSignature(config.xLogin, xDate, bodyText, config.secretKey);
+
+  const res = await fetch(`${config.apiBaseUrl}/secure_cards/${encodeURIComponent(cardId)}`, {
+    method: "DELETE",
+    headers: {
+      "X-Date": xDate,
+      "X-Login": config.xLogin,
+      "X-Trans-Key": config.xTransKey,
+      "X-Version": config.xVersion,
+      "User-Agent": config.userAgent,
+      Authorization: `V2-HMAC-SHA256, Signature: ${signature}`,
+    },
+  });
+
+  if (res.status === 404) {
+    return { ok: true, deleted: false };
+  }
+
+  const text = await res.text();
+  if (!res.ok) {
+    let message = text || `${res.status} ${res.statusText}`;
+    try {
+      const json = text ? JSON.parse(text) : null;
+      message = String(json?.message ?? json?.error ?? message);
+    } catch {
+      // noop
+    }
+    throw new Error(message);
+  }
+
+  return { ok: true, deleted: true };
 }
 
 export function verifyNotificationSignature(rawBody: string, authorizationHeader: string | undefined, xDate: string | undefined) {

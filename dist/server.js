@@ -11,6 +11,7 @@ const dns_1 = __importDefault(require("dns"));
 // Railway puede no tener IPv6; forzar IPv4 para SMTP (Gmail)
 dns_1.default.setDefaultResultOrder("ipv4first");
 const app_1 = __importDefault(require("./app"));
+const scheduler_1 = require("./billing/scheduler");
 const prisma_1 = require("./lib/prisma");
 const PORT = Number(process.env.PORT) || 3000;
 async function ensureRuntimeSchema() {
@@ -23,6 +24,7 @@ async function ensureRuntimeSchema() {
 }
 async function start() {
     await ensureRuntimeSchema();
+    (0, scheduler_1.startBillingScheduler)();
     // Sin host para enlazar todas las interfaces (IPv4 + IPv6); Railway puede conectar por IPv6.
     app_1.default.listen(PORT, () => {
         console.log(`Server running on port ${PORT}`);

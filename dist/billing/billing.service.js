@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getBillingConfig = getBillingConfig;
+exports.pickCurrentSubscription = pickCurrentSubscription;
 exports.getPlanDurationMonths = getPlanDurationMonths;
 exports.buildBillingSummary = buildBillingSummary;
 const client_1 = require("@prisma/client");
@@ -40,17 +41,25 @@ function getBillingConfig() {
     const proEarlyMonthlyUsdMinor = readPositiveIntEnv("BILLING_PRO_EARLY_MONTHLY_USD_MINOR", 399);
     const defaultAnnual = proEarlyMonthlyUsdMinor * 12;
     const checkoutAllowedEmails = readEmailListEnv("BILLING_CHECKOUT_ALLOWED_EMAILS");
+    const smartFieldsKey = String(process.env.DLOCAL_SMARTFIELDS_KEY ?? process.env.DLOCAL_SMART_FIELDS_KEY ?? process.env.DLOCAL_X_LOGIN ?? "").trim() || null;
+    const smartFieldsEnvironment = String(process.env.DLOCAL_API_BASE_URL ?? "").trim().includes("sandbox") || process.env.NODE_ENV !== "production"
+        ? "sandbox"
+        : "production";
     const integrationReady = !!(String(process.env.DLOCAL_X_LOGIN ?? "").trim() &&
         String(process.env.DLOCAL_X_TRANS_KEY ?? "").trim() &&
         String(process.env.DLOCAL_SECRET_KEY ?? "").trim());
+    const smartFieldsReady = integrationReady && !!smartFieldsKey;
     const billingEnabled = readBooleanEnv("BILLING_ENABLED", true);
     return {
         provider: client_1.BillingProvider.DLOCAL,
         billingEnabled,
         integrationReady,
-        checkoutReady: integrationReady,
+        checkoutReady: smartFieldsReady,
         checkoutAllowedEmails,
         customerPortalReady: false,
+        smartFieldsReady,
+        smartFieldsKey,
+        smartFieldsEnvironment,
         earlyStageMonths: readPositiveIntEnv("BILLING_EARLY_STAGE_MONTHS", 2),
         graceDays: readPositiveIntEnv("BILLING_GRACE_DAYS", 7),
         proEarlyMonthlyUsdMinor,
@@ -128,6 +137,11 @@ function baseSummary(config) {
         integrationReady: config.integrationReady,
         checkoutReady: config.checkoutReady,
         customerPortalReady: config.customerPortalReady,
+        smartFields: {
+            ready: config.smartFieldsReady,
+            key: config.smartFieldsKey,
+            environment: config.smartFieldsEnvironment,
+        },
         planCode: client_1.BillingPlanCode.EARLY_STAGE,
         subscriptionStatus: "active",
         accessLevel: "full",
@@ -136,6 +150,7 @@ function baseSummary(config) {
         planEndsAt: null,
         graceEndsAt: null,
         cancelAtPeriodEnd: false,
+        canCancelCurrentSubscription: false,
         price: {
             amountMinor: config.proEarlyMonthlyUsdMinor,
             currencyCode: "USD",
@@ -159,6 +174,9 @@ function withCurrentSubscription(summary, subscription) {
         planEndsAt: toIsoOrNull(subscription.currentPeriodEndsAt ?? subscription.trialEndsAt ?? subscription.endedAt),
         graceEndsAt: toIsoOrNull(subscription.graceEndsAt),
         cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+        canCancelCurrentSubscription: subscription.planCode === client_1.BillingPlanCode.PRO_MONTHLY &&
+            subscription.status === client_1.BillingSubscriptionStatus.ACTIVE &&
+            !subscription.cancelAtPeriodEnd,
         price: {
             amountMinor: subscription.amountMinor,
             currencyCode: "USD",
@@ -191,6 +209,7 @@ function buildBillingSummary(user) {
             nextAction: "none",
             isSuperAdminBypass: true,
             offers: [],
+            canCancelCurrentSubscription: false,
             notes: ["super_admin_bypass"],
         };
     }
