@@ -100,14 +100,8 @@ const upsertSnapshotForMonth = async (req, res) => {
         catch (e) {
             return res.status(400).json({ error: e?.message ?? "Invalid FX rate" });
         }
-        const prevYear = ym.month === 1 ? ym.year - 1 : ym.year;
-        const prevMonth = ym.month === 1 ? 12 : ym.month - 1;
-        const prevSnapshot = await prisma_1.prisma.investmentSnapshot.findUnique({
-            where: { investmentId_year_month: { investmentId, year: prevYear, month: prevMonth } },
-        });
-        const useFrozenStart = !existing && prevSnapshot?.isClosed;
-        capitalToUse = useFrozenStart ? Number(prevSnapshot.capital ?? 0) : closingCapital;
-        capitalUsdToUse = useFrozenStart ? Number(prevSnapshot.capitalUsd ?? 0) : fx.amountUsd;
+        capitalToUse = closingCapital;
+        capitalUsdToUse = fx.amountUsd;
     }
     const investment = await prisma_1.prisma.investment.findFirst({ where: { id: investmentId, userId } });
     if (!investment)
