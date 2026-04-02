@@ -674,7 +674,7 @@ export const pageData = async (req: AuthRequest, res: Response) => {
   const allInvestmentSnapsYear = await prisma.investmentSnapshot.findMany({
     where: { investment: { userId }, year },
     orderBy: [{ investmentId: "asc" }, { month: "asc" }],
-    select: { investmentId: true, month: true, capital: true, capitalUsd: true, encryptedPayload: true },
+    select: { id: true, investmentId: true, month: true, capital: true, capitalUsd: true, encryptedPayload: true, isClosed: true },
   });
   // group them into arrays in the same structure the front‑end expects
   const snapsByInv = new Map<string, typeof allSnapsYear>();
