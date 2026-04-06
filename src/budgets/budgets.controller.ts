@@ -622,7 +622,7 @@ export const pageData = async (req: AuthRequest, res: Response) => {
     prisma.expense.findMany({
       where: { userId, date: { gte: yearStart, lt: yearEnd } },
       orderBy: [{ date: "asc" }],
-      select: { date: true, amountUsd: true, encryptedPayload: true },
+      select: { date: true, amount: true, amountUsd: true, currencyId: true, usdUyuRate: true, encryptedPayload: true },
     }),
   ]);
 
@@ -648,12 +648,20 @@ export const pageData = async (req: AuthRequest, res: Response) => {
     // keep same shape consumed by front-end: array of objects with amountUsd
     return amt !== 0 ? [{ amountUsd: amt }] : [];
   }) };
-  const yearExpensesByMonth = { byMonth: Array.from({ length: 12 }, () => [] as Array<{ amountUsd?: number; encryptedPayload?: string | null }>) };
+  const yearExpensesByMonth = {
+    byMonth: Array.from(
+      { length: 12 },
+      () => [] as Array<{ amount?: number; amountUsd?: number; currencyId?: string; usdUyuRate?: number | null; encryptedPayload?: string | null }>
+    ),
+  };
   for (const row of expenseRows) {
     const monthIndex = row.date.getUTCMonth();
     if (monthIndex < 0 || monthIndex >= 12) continue;
     yearExpensesByMonth.byMonth[monthIndex]?.push({
+      amount: row.amount ?? 0,
       amountUsd: row.amountUsd ?? 0,
+      currencyId: row.currencyId,
+      usdUyuRate: row.usdUyuRate ?? null,
       encryptedPayload: row.encryptedPayload ?? undefined,
     });
   }
