@@ -105,13 +105,13 @@ export function buildSpecialGuestCampaignEmail(language?: PreferredLanguage | st
         "",
         `Revisar mi cuenta: ${accountUrl}`,
         "",
-        "Gracias por ayudarnos a construir Ground desde tan temprano.",
+        "Gracias por ayudarnos a construir Ground desde tan temprano!",
       ].join("\n"),
       html: wrapCampaignHtml({
         eyebrow: "Special Guest",
         title: "Extendimos tu Early Stage a 4 meses!",
         intro:
-          "Gracias. Venís acompañando Ground desde una etapa muy temprana, y todo el feedback que nos compartís nos está ayudando muchísimo a mejorar el producto más rápido y con mejor foco.",
+          "Gracias! Venís acompañando Ground desde una etapa muy temprana, y todo el feedback que nos compartís nos está ayudando muchísimo a mejorar el producto más rápido y con mejor foco.",
         bodyLead:
           "Como entraste a Early Stage antes del 10 de abril de 2026, te catalogamos como Special Guest. Por eso extendimos tu período gratis a 4 meses y queríamos contártelo con un enorme gracias de por medio.",
         highlightsTitle: "Esto es parte de lo último que sumamos en Ground",
@@ -126,7 +126,7 @@ export function buildSpecialGuestCampaignEmail(language?: PreferredLanguage | st
           "Entrá en Cuenta y actualizá Ubicación y Teléfono. Si algún día perdés tu clave, estos datos son claves para recuperar el acceso. Con E2EE, si no tenés recovery bien configurado, podrías no poder recuperar tu información histórica.",
         ctaLabel: "Revisar mi cuenta",
         ctaUrl: accountUrl,
-        footer: "Gracias por ayudarnos a construir Ground desde tan temprano.",
+        footer: "Gracias por ayudarnos a construir Ground desde tan temprano!",
       }),
     };
   }
