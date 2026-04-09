@@ -6,6 +6,8 @@ const requireBillingWriteAccess_1 = require("../middlewares/requireBillingWriteA
 const expenses_controller_1 = require("./expenses.controller");
 const router = (0, express_1.Router)();
 router.post("/", requireAuth_1.requireAuth, requireBillingWriteAccess_1.requireBillingWriteAccess, expenses_controller_1.createExpense);
+router.post("/import/commit", requireAuth_1.requireAuth, requireBillingWriteAccess_1.requireBillingWriteAccess, expenses_controller_1.importExpensesBatch);
+router.get("/import/rules", requireAuth_1.requireAuth, expenses_controller_1.listMerchantMappingRules);
 router.get("/page-data", requireAuth_1.requireAuth, expenses_controller_1.expensesPageData);
 router.get("/", requireAuth_1.requireAuth, (req, res, next) => {
     if (req.query?.year != null && req.query?.month == null) {

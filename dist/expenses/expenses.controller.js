@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deleteExpense = exports.updateExpense = exports.expensesSummary = exports.expensesPageData = exports.listExpensesByMonth = exports.listExpensesByYear = exports.createExpense = void 0;
+exports.deleteExpense = exports.updateExpense = exports.expensesSummary = exports.expensesPageData = exports.listExpensesByMonth = exports.listExpensesByYear = exports.listMerchantMappingRules = exports.importExpensesBatch = exports.createExpense = void 0;
 const prisma_1 = require("../lib/prisma");
 const fx_1 = require("../utils/fx");
 function paramId(params) {
@@ -35,6 +35,30 @@ function normalizeToMonthStartUTC(dateStr) {
     const y = d.getUTCFullYear();
     const m = d.getUTCMonth() + 1;
     return new Date(Date.UTC(y, m - 1, 1, 0, 0, 0));
+}
+function parseBatchAmount(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+}
+function parseLearnedRuleInput(raw, index) {
+    const merchantFingerprint = typeof raw?.merchantFingerprint === "string" ? raw.merchantFingerprint.trim() : "";
+    if (!merchantFingerprint)
+        throw new Error(`Rule ${index + 1}: merchantFingerprint is required`);
+    const categoryId = typeof raw?.categoryId === "string" ? raw.categoryId.trim() : "";
+    if (!categoryId)
+        throw new Error(`Rule ${index + 1}: categoryId is required`);
+    const encryptedPayload = typeof raw?.encryptedPayload === "string" ? raw.encryptedPayload.trim() : "";
+    if (!encryptedPayload)
+        throw new Error(`Rule ${index + 1}: encryptedPayload is required`);
+    const expenseType = raw?.expenseType === "FIXED" || raw?.expenseType === "VARIABLE"
+        ? raw.expenseType
+        : null;
+    return {
+        merchantFingerprint,
+        categoryId,
+        encryptedPayload,
+        expenseType,
+    };
 }
 const createExpense = async (req, res) => {
     const userId = req.userId;
@@ -107,6 +131,203 @@ const createExpense = async (req, res) => {
     return res.status(201).json(expense);
 };
 exports.createExpense = createExpense;
+const importExpensesBatch = async (req, res) => {
+    const userId = req.userId;
+    const rawItems = Array.isArray(req.body?.items) ? req.body.items : [];
+    const rawLearnedRules = Array.isArray(req.body?.learnedRules) ? req.body.learnedRules : [];
+    if (rawItems.length === 0) {
+        return res.status(400).json({ error: "items must be a non-empty array" });
+    }
+    if (rawItems.length > 500) {
+        return res.status(400).json({ error: "Too many items. Limit is 500 per import." });
+    }
+    const normalizedItems = rawItems.map((raw, index) => {
+        const hasEncrypted = typeof raw?.encryptedPayload === "string" && raw.encryptedPayload.length > 0;
+        const description = typeof raw?.description === "string" ? raw.description.trim() : "";
+        if (!hasEncrypted && !description) {
+            throw new Error(`Row ${index + 1}: description is required`);
+        }
+        const amount = parseBatchAmount(raw?.amount);
+        if (amount == null) {
+            throw new Error(`Row ${index + 1}: amount must be a number`);
+        }
+        if (!hasEncrypted && amount === 0) {
+            throw new Error(`Row ${index + 1}: amount must be non-zero`);
+        }
+        const date = normalizeToMonthStartUTC(raw?.date);
+        if (!date) {
+            throw new Error(`Row ${index + 1}: date must be YYYY-MM or an ISO date string`);
+        }
+        const categoryId = typeof raw?.categoryId === "string" ? raw.categoryId : "";
+        if (!categoryId)
+            throw new Error(`Row ${index + 1}: categoryId is required`);
+        const currencyId = typeof raw?.currencyId === "string" ? raw.currencyId : "";
+        if (!currencyId)
+            throw new Error(`Row ${index + 1}: currencyId is required`);
+        const amountUsd = raw?.amountUsd == null ? null : parseBatchAmount(raw.amountUsd);
+        if (hasEncrypted && amountUsd == null) {
+            throw new Error(`Row ${index + 1}: amountUsd is required for encrypted imports`);
+        }
+        const expenseType = raw?.expenseType === "FIXED" || raw?.expenseType === "VARIABLE"
+            ? raw.expenseType
+            : null;
+        const usdUyuRate = raw?.usdUyuRate == null
+            ? null
+            : typeof raw.usdUyuRate === "number" && raw.usdUyuRate > 0
+                ? raw.usdUyuRate
+                : null;
+        return {
+            hasEncrypted,
+            description,
+            amount,
+            amountUsd,
+            date,
+            categoryId,
+            currencyId,
+            usdUyuRate,
+            expenseType,
+            encryptedPayload: hasEncrypted ? raw.encryptedPayload : null,
+        };
+    });
+    const normalizedLearnedRules = rawLearnedRules.map((raw, index) => parseLearnedRuleInput(raw, index));
+    const categoryIds = [...new Set(normalizedItems.map((item) => item.categoryId))];
+    for (const rule of normalizedLearnedRules) {
+        categoryIds.push(rule.categoryId);
+    }
+    const currencyIds = [...new Set(normalizedItems.map((item) => item.currencyId))];
+    const years = [...new Set(normalizedItems.map((item) => item.date.getUTCFullYear()))];
+    const [categories, currencies, monthCloses] = await Promise.all([
+        prisma_1.prisma.category.findMany({
+            where: { userId, id: { in: categoryIds } },
+            select: { id: true, expenseType: true },
+        }),
+        prisma_1.prisma.currency.findMany({
+            where: { id: { in: currencyIds } },
+            select: { id: true },
+        }),
+        prisma_1.prisma.monthClose.findMany({
+            where: {
+                userId,
+                year: { in: years },
+                isClosed: true,
+            },
+            select: { year: true, month: true },
+        }),
+    ]);
+    const categoryMap = new Map(categories.map((item) => [item.id, item]));
+    const currencySet = new Set(currencies.map((item) => item.id));
+    const closedSet = new Set(monthCloses.map((item) => `${item.year}-${item.month}`));
+    const createRows = normalizedItems.map((item, index) => {
+        const category = categoryMap.get(item.categoryId);
+        if (!category) {
+            throw new Error(`Row ${index + 1}: invalid categoryId for this user`);
+        }
+        if (!currencySet.has(item.currencyId)) {
+            throw new Error(`Row ${index + 1}: invalid currencyId`);
+        }
+        const year = item.date.getUTCFullYear();
+        const month = item.date.getUTCMonth() + 1;
+        if (closedSet.has(`${year}-${month}`)) {
+            throw new Error(`Row ${index + 1}: target month is closed`);
+        }
+        let amountUsd = 0;
+        let usdUyuRate = item.usdUyuRate;
+        if (item.hasEncrypted) {
+            amountUsd = item.amountUsd ?? 0;
+        }
+        else {
+            const fx = (0, fx_1.toUsd)({
+                amount: item.amount,
+                currencyId: item.currencyId,
+                usdUyuRate: item.usdUyuRate ?? undefined,
+            });
+            amountUsd = fx.amountUsd;
+            usdUyuRate = fx.usdUyuRate;
+        }
+        return {
+            userId,
+            categoryId: item.categoryId,
+            currencyId: item.currencyId,
+            description: item.hasEncrypted ? item.description || "(encrypted)" : item.description,
+            amount: item.hasEncrypted ? 0 : item.amount,
+            amountUsd,
+            usdUyuRate,
+            date: item.date,
+            expenseType: item.expenseType ?? category.expenseType,
+            ...(item.encryptedPayload ? { encryptedPayload: item.encryptedPayload } : {}),
+        };
+    });
+    const dedupedLearnedRules = new Map();
+    for (const rule of normalizedLearnedRules) {
+        const category = categoryMap.get(rule.categoryId);
+        if (!category) {
+            throw new Error(`Rule for ${rule.merchantFingerprint.slice(0, 8)}: invalid categoryId for this user`);
+        }
+        dedupedLearnedRules.set(rule.merchantFingerprint, {
+            ...rule,
+            expenseType: rule.expenseType ?? category.expenseType,
+        });
+    }
+    const result = await prisma_1.prisma.$transaction(async (tx) => {
+        const created = await tx.expense.createMany({
+            data: createRows,
+        });
+        for (const rule of dedupedLearnedRules.values()) {
+            await tx.merchantMappingRule.upsert({
+                where: {
+                    userId_merchantFingerprint: {
+                        userId,
+                        merchantFingerprint: rule.merchantFingerprint,
+                    },
+                },
+                create: {
+                    userId,
+                    categoryId: rule.categoryId,
+                    merchantFingerprint: rule.merchantFingerprint,
+                    encryptedPayload: rule.encryptedPayload,
+                    expenseType: rule.expenseType,
+                    useCount: 1,
+                    lastLearnedAt: new Date(),
+                },
+                update: {
+                    categoryId: rule.categoryId,
+                    encryptedPayload: rule.encryptedPayload,
+                    expenseType: rule.expenseType,
+                    useCount: { increment: 1 },
+                    lastLearnedAt: new Date(),
+                },
+            });
+        }
+        return created;
+    });
+    return res.status(201).json({ count: result.count });
+};
+exports.importExpensesBatch = importExpensesBatch;
+const listMerchantMappingRules = async (req, res) => {
+    const userId = req.userId;
+    const rows = await prisma_1.prisma.merchantMappingRule.findMany({
+        where: { userId },
+        orderBy: [{ useCount: "desc" }, { updatedAt: "desc" }],
+        include: {
+            category: {
+                select: { id: true, name: true, nameKey: true, expenseType: true },
+            },
+        },
+    });
+    res.json({
+        rows: rows.map((row) => ({
+            id: row.id,
+            merchantFingerprint: row.merchantFingerprint,
+            categoryId: row.categoryId,
+            encryptedPayload: row.encryptedPayload,
+            expenseType: row.expenseType,
+            useCount: row.useCount,
+            lastLearnedAt: row.lastLearnedAt,
+            category: row.category,
+        })),
+    });
+};
+exports.listMerchantMappingRules = listMerchantMappingRules;
 function parseYear(query) {
     const year = Number(query.year);
     if (!Number.isInteger(year) || year < 2000 || year > 2100)

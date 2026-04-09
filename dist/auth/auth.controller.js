@@ -565,9 +565,19 @@ const me = async (req, res) => {
     });
     if (!user)
         return res.status(404).json({ error: "User not found" });
+    let encryptionKey;
+    if (user.encryptedRecoveryPackage) {
+        try {
+            encryptionKey = (0, recoveryCrypto_1.decryptRecoveryPackage)(user.encryptedRecoveryPackage);
+        }
+        catch {
+            // recovery package invalid or SERVER_RECOVERY_KEY not set
+        }
+    }
     return res.json({
         ...user,
         recoveryEnabled: !!(user.encryptedRecoveryPackage && user.phoneVerifiedAt),
+        encryptionKey,
     });
 };
 exports.me = me;

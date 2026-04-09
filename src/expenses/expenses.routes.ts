@@ -3,6 +3,8 @@ import { requireAuth } from "../middlewares/requireAuth";
 import { requireBillingWriteAccess } from "../middlewares/requireBillingWriteAccess";
 import {
   createExpense,
+  importExpensesBatch,
+  listMerchantMappingRules,
   expensesPageData,
   listExpensesByMonth,
   listExpensesByYear,
@@ -14,6 +16,8 @@ import {
 const router = Router();
 
 router.post("/", requireAuth, requireBillingWriteAccess, createExpense);
+router.post("/import/commit", requireAuth, requireBillingWriteAccess, importExpensesBatch);
+router.get("/import/rules", requireAuth, listMerchantMappingRules);
 router.get("/page-data", requireAuth, expensesPageData);
 router.get("/", requireAuth, (req, res, next) => {
   if (req.query?.year != null && req.query?.month == null) {

@@ -76,6 +76,7 @@ model User {
   expenseTemplates ExpenseTemplate[]
   plannedExpenses  PlannedExpense[]
   monthlyBudgets   MonthlyBudget[]
+  merchantMappingRules MerchantMappingRule[]
 
   phoneVerificationCodes PhoneVerificationCode[]
   recoverySessions       RecoverySession[]
@@ -165,8 +166,29 @@ model Category {
 
   expenseTemplates ExpenseTemplate[]
   plannedExpenses  PlannedExpense[]
+  merchantMappingRules MerchantMappingRule[]
 
   @@unique([userId, name])
+}
+
+model MerchantMappingRule {
+  id                String      @id @default(uuid())
+  userId            String
+  categoryId        String
+  merchantFingerprint String
+  encryptedPayload  String      @db.Text
+  expenseType       ExpenseType
+  useCount          Int         @default(1)
+  lastLearnedAt     DateTime    @default(now())
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, merchantFingerprint])
+  @@index([userId, updatedAt])
+  @@index([userId, categoryId])
 }
 
 model Currency {
