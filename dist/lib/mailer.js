@@ -5,8 +5,10 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.sendSignupCodeEmail = sendSignupCodeEmail;
 exports.sendPasswordResetCodeEmail = sendPasswordResetCodeEmail;
+exports.sendSpecialGuestCampaignEmail = sendSpecialGuestCampaignEmail;
 const nodemailer_1 = __importDefault(require("nodemailer"));
 const authMessages_1 = require("./authMessages");
+const campaignMessages_1 = require("./campaignMessages");
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const EMAIL_FROM = process.env.EMAIL_FROM || "";
 const SMTP_HOST = process.env.SMTP_HOST;
@@ -58,17 +60,7 @@ function sendViaResend(recipient, subject, html, text) {
             throw new Error(data.message || `Resend API ${res.status}`);
     });
 }
-/**
- * Envía el código de verificación por email.
- * Prioridad: 1) Gmail/SMTP si está configurado (SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM).
- *            2) Si SMTP falla por red (ej. Railway bloquea puerto 587), usa Resend si RESEND_API_KEY está definida.
- *            3) Solo Resend si no hay SMTP.
- */
-async function sendSignupCodeEmail(to, code, language) {
-    const recipient = String(to || "").trim();
-    if (!recipient)
-        throw new Error("Missing recipient email (to)");
-    const { subject, text, html } = (0, authMessages_1.buildSignupCodeEmail)(code, language);
+async function sendEmailTemplate(recipient, subject, html, text) {
     if (transporter) {
         try {
             await transporter.sendMail({ from: EMAIL_FROM, to: recipient, subject, text, html });
@@ -90,6 +82,19 @@ async function sendSignupCodeEmail(to, code, language) {
     throw new Error("No email config. Set SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM (Gmail) or RESEND_API_KEY (Resend).");
 }
 /**
+ * Envía el código de verificación por email.
+ * Prioridad: 1) Gmail/SMTP si está configurado (SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM).
+ *            2) Si SMTP falla por red (ej. Railway bloquea puerto 587), usa Resend si RESEND_API_KEY está definida.
+ *            3) Solo Resend si no hay SMTP.
+ */
+async function sendSignupCodeEmail(to, code, language) {
+    const recipient = String(to || "").trim();
+    if (!recipient)
+        throw new Error("Missing recipient email (to)");
+    const { subject, text, html } = (0, authMessages_1.buildSignupCodeEmail)(code, language);
+    await sendEmailTemplate(recipient, subject, html, text);
+}
+/**
  * Envía el código para resetear contraseña (misma infra que signup).
  */
 async function sendPasswordResetCodeEmail(to, code, language) {
@@ -97,23 +102,12 @@ async function sendPasswordResetCodeEmail(to, code, language) {
     if (!recipient)
         throw new Error("Missing recipient email (to)");
     const { subject, text, html } = (0, authMessages_1.buildPasswordResetCodeEmail)(code, language);
-    if (transporter) {
-        try {
-            await transporter.sendMail({ from: EMAIL_FROM, to: recipient, subject, text, html });
-            return;
-        }
-        catch (err) {
-            const msg = err instanceof Error ? err.message : String(err);
-            if (isNetworkError(msg) && RESEND_API_KEY) {
-                await sendViaResend(recipient, subject, html, text);
-                return;
-            }
-            throw err;
-        }
-    }
-    if (RESEND_API_KEY) {
-        await sendViaResend(recipient, subject, html, text);
-        return;
-    }
-    throw new Error("No email config. Set SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM (Gmail) or RESEND_API_KEY (Resend).");
+    await sendEmailTemplate(recipient, subject, html, text);
+}
+async function sendSpecialGuestCampaignEmail(to, language) {
+    const recipient = String(to || "").trim();
+    if (!recipient)
+        throw new Error("Missing recipient email (to)");
+    const { subject, text, html } = (0, campaignMessages_1.buildSpecialGuestCampaignEmail)(language);
+    await sendEmailTemplate(recipient, subject, html, text);
 }

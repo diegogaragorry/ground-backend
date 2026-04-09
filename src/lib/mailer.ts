@@ -1,5 +1,6 @@
 import nodemailer from "nodemailer";
 import { buildPasswordResetCodeEmail, buildSignupCodeEmail } from "./authMessages";
+import { buildSpecialGuestCampaignEmail } from "./campaignMessages";
 import type { PreferredLanguage } from "./preferredLanguage";
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
@@ -59,18 +60,7 @@ function sendViaResend(recipient: string, subject: string, html: string, text: s
   });
 }
 
-/**
- * Envía el código de verificación por email.
- * Prioridad: 1) Gmail/SMTP si está configurado (SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM).
- *            2) Si SMTP falla por red (ej. Railway bloquea puerto 587), usa Resend si RESEND_API_KEY está definida.
- *            3) Solo Resend si no hay SMTP.
- */
-export async function sendSignupCodeEmail(to: string, code: string, language?: PreferredLanguage | string | null) {
-  const recipient = String(to || "").trim();
-  if (!recipient) throw new Error("Missing recipient email (to)");
-
-  const { subject, text, html } = buildSignupCodeEmail(code, language);
-
+async function sendEmailTemplate(recipient: string, subject: string, html: string, text: string) {
   if (transporter) {
     try {
       await transporter.sendMail({ from: EMAIL_FROM, to: recipient, subject, text, html });
@@ -96,6 +86,20 @@ export async function sendSignupCodeEmail(to: string, code: string, language?: P
 }
 
 /**
+ * Envía el código de verificación por email.
+ * Prioridad: 1) Gmail/SMTP si está configurado (SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM).
+ *            2) Si SMTP falla por red (ej. Railway bloquea puerto 587), usa Resend si RESEND_API_KEY está definida.
+ *            3) Solo Resend si no hay SMTP.
+ */
+export async function sendSignupCodeEmail(to: string, code: string, language?: PreferredLanguage | string | null) {
+  const recipient = String(to || "").trim();
+  if (!recipient) throw new Error("Missing recipient email (to)");
+
+  const { subject, text, html } = buildSignupCodeEmail(code, language);
+  await sendEmailTemplate(recipient, subject, html, text);
+}
+
+/**
  * Envía el código para resetear contraseña (misma infra que signup).
  */
 export async function sendPasswordResetCodeEmail(to: string, code: string, language?: PreferredLanguage | string | null) {
@@ -103,27 +107,16 @@ export async function sendPasswordResetCodeEmail(to: string, code: string, langu
   if (!recipient) throw new Error("Missing recipient email (to)");
 
   const { subject, text, html } = buildPasswordResetCodeEmail(code, language);
+  await sendEmailTemplate(recipient, subject, html, text);
+}
 
-  if (transporter) {
-    try {
-      await transporter.sendMail({ from: EMAIL_FROM, to: recipient, subject, text, html });
-      return;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (isNetworkError(msg) && RESEND_API_KEY) {
-        await sendViaResend(recipient, subject, html, text);
-        return;
-      }
-      throw err;
-    }
-  }
+export async function sendSpecialGuestCampaignEmail(
+  to: string,
+  language?: PreferredLanguage | string | null
+) {
+  const recipient = String(to || "").trim();
+  if (!recipient) throw new Error("Missing recipient email (to)");
 
-  if (RESEND_API_KEY) {
-    await sendViaResend(recipient, subject, html, text);
-    return;
-  }
-
-  throw new Error(
-    "No email config. Set SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM (Gmail) or RESEND_API_KEY (Resend)."
-  );
+  const { subject, text, html } = buildSpecialGuestCampaignEmail(language);
+  await sendEmailTemplate(recipient, subject, html, text);
 }

@@ -1,0 +1,10 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const express_1 = require("express");
+const requireAuth_1 = require("../middlewares/requireAuth");
+const requireSuperAdmin_1 = require("../middlewares/requireSuperAdmin");
+const campaigns_controller_1 = require("./campaigns.controller");
+const router = (0, express_1.Router)();
+router.get("/campaigns/special-guest/preview", requireAuth_1.requireAuth, requireSuperAdmin_1.requireSuperAdmin, campaigns_controller_1.previewSpecialGuestCampaign);
+router.post("/campaigns/special-guest/send", requireAuth_1.requireAuth, requireSuperAdmin_1.requireSuperAdmin, campaigns_controller_1.sendSpecialGuestCampaign);
+exports.default = router;
