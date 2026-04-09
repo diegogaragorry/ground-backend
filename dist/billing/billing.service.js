@@ -41,6 +41,8 @@ function getBillingConfig() {
     const proEarlyMonthlyUsdMinor = readPositiveIntEnv("BILLING_PRO_EARLY_MONTHLY_USD_MINOR", 399);
     const defaultAnnual = proEarlyMonthlyUsdMinor * 12;
     const checkoutAllowedEmails = readEmailListEnv("BILLING_CHECKOUT_ALLOWED_EMAILS");
+    const earlyStageMonths = readPositiveIntEnv("BILLING_EARLY_STAGE_MONTHS", 2);
+    const earlyStageSpecialGuestMonths = readPositiveIntEnv("BILLING_EARLY_STAGE_SPECIAL_GUEST_MONTHS", 4);
     const smartFieldsKey = String(process.env.DLOCAL_SMARTFIELDS_KEY ?? process.env.DLOCAL_SMART_FIELDS_KEY ?? process.env.DLOCAL_X_LOGIN ?? "").trim() || null;
     const smartFieldsEnvironment = String(process.env.DLOCAL_API_BASE_URL ?? "").trim().includes("sandbox") || process.env.NODE_ENV !== "production"
         ? "sandbox"
@@ -60,7 +62,8 @@ function getBillingConfig() {
         smartFieldsReady,
         smartFieldsKey,
         smartFieldsEnvironment,
-        earlyStageMonths: readPositiveIntEnv("BILLING_EARLY_STAGE_MONTHS", 2),
+        earlyStageMonths,
+        earlyStageSpecialGuestMonths,
         graceDays: readPositiveIntEnv("BILLING_GRACE_DAYS", 7),
         proEarlyMonthlyUsdMinor,
         proEarlyAnnualUsdMinor: readPositiveIntEnv("BILLING_PRO_EARLY_ANNUAL_USD_MINOR", defaultAnnual),
@@ -194,6 +197,12 @@ function getPlanDurationMonths(planCode) {
         return 1;
     return 0;
 }
+function getEarlyStageDurationMonths(user, config) {
+    if (user.specialGuest) {
+        return config.earlyStageSpecialGuestMonths;
+    }
+    return config.earlyStageMonths;
+}
 function buildBillingSummary(user) {
     const config = getBillingConfig();
     const checkoutAllowed = isCheckoutAllowedForUser(config, user.email);
@@ -296,7 +305,7 @@ function buildBillingSummary(user) {
                 };
         }
     }
-    const earlyStageEndsAt = addMonths(user.createdAt, config.earlyStageMonths);
+    const earlyStageEndsAt = addMonths(user.createdAt, getEarlyStageDurationMonths(user, config));
     const earlyStageExpired = now > earlyStageEndsAt;
     return {
         ...summary,

@@ -50,6 +50,7 @@ model User {
   country                    String?
   preferredLanguage          String? // "es" | "en" — idioma preferido para UI y mensajes transaccionales
   role                       UserRole @default(USER)
+  specialGuest               Boolean  @default(false)
   createdAt                  DateTime @default(now())
   forceOnboardingNextLogin   Boolean  @default(false)
   onboardingStep             String   @default("welcome")

@@ -17,6 +17,7 @@ async function requireBillingWriteAccess(req, res, next) {
             id: true,
             email: true,
             role: true,
+            specialGuest: true,
             createdAt: true,
             billingSubscriptions: {
                 orderBy: { createdAt: "desc" },

@@ -21,7 +21,7 @@ function validatePassword(pw) {
 const listUsers = async (req, res) => {
     const rows = await prisma_1.prisma.user.findMany({
         orderBy: { createdAt: "desc" },
-        select: { id: true, email: true, role: true, createdAt: true },
+        select: { id: true, email: true, role: true, specialGuest: true, createdAt: true },
     });
     res.json({ rows });
 };
@@ -110,6 +110,7 @@ const createUser = async (req, res) => {
     const email = cleanEmail(req.body?.email);
     const password = validatePassword(req.body?.password);
     const role = req.body?.role === "SUPER_ADMIN" ? "SUPER_ADMIN" : "USER";
+    const specialGuest = req.body?.specialGuest === true;
     if (!email)
         return res.status(400).json({ error: "Invalid email" });
     if (!password)
@@ -117,8 +118,8 @@ const createUser = async (req, res) => {
     const hash = await bcryptjs_1.default.hash(password, 10);
     try {
         const user = await prisma_1.prisma.user.create({
-            data: { email, password: hash, role },
-            select: { id: true, email: true, role: true, createdAt: true },
+            data: { email, password: hash, role, specialGuest },
+            select: { id: true, email: true, role: true, specialGuest: true, createdAt: true },
         });
         res.status(201).json(user);
     }
@@ -138,6 +139,7 @@ const updateUser = async (req, res) => {
         return res.status(400).json({ error: "Invalid id" });
     const email = req.body?.email != null ? cleanEmail(req.body.email) : undefined;
     const role = req.body?.role != null ? (req.body.role === "SUPER_ADMIN" ? "SUPER_ADMIN" : "USER") : undefined;
+    const specialGuest = req.body?.specialGuest != null ? req.body.specialGuest === true : undefined;
     const patch = {};
     if (email !== undefined) {
         if (!email)
@@ -146,6 +148,8 @@ const updateUser = async (req, res) => {
     }
     if (role !== undefined)
         patch.role = role;
+    if (specialGuest !== undefined)
+        patch.specialGuest = specialGuest;
     // password opcional
     if (req.body?.password != null) {
         const pw = validatePassword(req.body.password);
@@ -157,7 +161,7 @@ const updateUser = async (req, res) => {
         const user = await prisma_1.prisma.user.update({
             where: { id },
             data: patch,
-            select: { id: true, email: true, role: true, createdAt: true },
+            select: { id: true, email: true, role: true, specialGuest: true, createdAt: true },
         });
         res.json(user);
     }

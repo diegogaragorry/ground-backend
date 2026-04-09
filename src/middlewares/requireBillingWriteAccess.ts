@@ -19,6 +19,7 @@ export async function requireBillingWriteAccess(req: AuthRequest, res: Response,
       id: true,
       email: true,
       role: true,
+      specialGuest: true,
       createdAt: true,
       billingSubscriptions: {
         orderBy: { createdAt: "desc" },

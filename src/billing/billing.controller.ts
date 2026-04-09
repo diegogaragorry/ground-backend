@@ -31,6 +31,7 @@ const billingUserSelect = {
   lastName: true,
   country: true,
   role: true,
+  specialGuest: true,
   createdAt: true,
   billingSubscriptions: {
     orderBy: { createdAt: "desc" as const },
