@@ -113,7 +113,7 @@ export function buildSpecialGuestCampaignEmail(language?: PreferredLanguage | st
         intro:
           "Gracias! Venís acompañando Ground desde una etapa muy temprana, y todo el feedback que nos compartís nos está ayudando muchísimo a mejorar el producto más rápido y con mejor foco.",
         bodyLead:
-          "Como entraste a Early Stage antes del 10 de abril de 2026, te catalogamos como Special Guest. Por eso extendimos tu período gratis a 4 meses y queríamos contártelo con un enorme gracias de por medio.",
+          "Como entraste a Early Stage antes del 10 de abril de 2026, te catalogamos como Special Guest. Por eso extendimos tu período gratis a 4 meses y queríamos contártelo con un enorme GRACIAS! de por medio.",
         highlightsTitle: "Esto es parte de lo último que sumamos en Ground",
         highlights: [
           "Cifrado de extremo a extremo (E2EE): lo que guardás queda cifrado de forma que solo vos podés descifrarlo. Ni nosotros ni alguien con acceso a la base puede leer tu información.",
