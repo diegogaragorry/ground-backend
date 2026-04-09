@@ -18,6 +18,7 @@ function wrapCampaignHtml(params: {
   title: string;
   intro: string;
   bodyLead: string;
+  highlightsTitle: string;
   highlights: string[];
   recoveryTitle: string;
   recoveryBody: string;
@@ -25,7 +26,19 @@ function wrapCampaignHtml(params: {
   ctaUrl: string;
   footer: string;
 }) {
-  const { eyebrow, title, intro, bodyLead, highlights, recoveryTitle, recoveryBody, ctaLabel, ctaUrl, footer } = params;
+  const {
+    eyebrow,
+    title,
+    intro,
+    bodyLead,
+    highlightsTitle,
+    highlights,
+    recoveryTitle,
+    recoveryBody,
+    ctaLabel,
+    ctaUrl,
+    footer,
+  } = params;
 
   const highlightItems = highlights
     .map(
@@ -45,7 +58,7 @@ function wrapCampaignHtml(params: {
         <div style="padding:28px 32px 32px">
           <p style="margin:0 0 18px;font-size:16px;line-height:1.6;color:#33415c">${bodyLead}</p>
           <div style="margin:0 0 24px;padding:20px 22px;background:#f6fbf8;border:1px solid #d6f2df;border-radius:18px">
-            <div style="margin:0 0 12px;font-size:15px;font-weight:800;color:#166534">Ground en las ultimas semanas</div>
+            <div style="margin:0 0 12px;font-size:15px;font-weight:800;color:#166534">${highlightsTitle}</div>
             <ul style="margin:0;padding-left:18px">
               ${highlightItems}
             </ul>
@@ -72,63 +85,68 @@ export function buildSpecialGuestCampaignEmail(language?: PreferredLanguage | st
 
   if (locale === "es") {
     return {
-      subject: "Extendimos tu Early Stage a 4 meses",
+      subject: "Extendimos tu Early Stage a 4 meses!",
       text: [
         "Hola,",
         "",
-        "Queremos agradecerte por el feedback que nos vienes compartiendo. Nos esta ayudando a mejorar Ground mucho mas rapido.",
+        "Gracias!",
         "",
-        "Por eso extendimos tu acceso Early Stage a 4 meses sin costo.",
+        "Venís acompañando Ground desde una etapa muy temprana, y todo el feedback que nos compartís nos está ayudando muchísimo a mejorar el producto más rápido y con mejor foco.",
         "",
-        "En estas ultimas semanas sumamos mejoras importantes:",
-        "- Cifrado E2EE",
-        "- Resumen YTD en Presupuesto",
-        "- Onboarding mejorado",
-        "- Flujo de gestion de patrimonio mas simple",
+        "Como entraste a Early Stage antes del 10 de abril de 2026, te catalogamos como Special Guest. Por eso extendimos tu período gratis a 4 meses.",
         "",
-        "Tambien te pedimos que entres en Cuenta y actualices Ubicacion y Telefono. Si alguna vez pierdes tu clave, estos datos son clave para recuperar el acceso. Con E2EE, si no tienes recovery bien configurado, podrias no poder recuperar tu informacion historica.",
+        "Además, en estas últimas semanas sumamos mejoras importantes:",
+        "- Cifrado de extremo a extremo (E2EE): lo que guardás queda cifrado de forma que solo vos podés descifrarlo. Ni nosotros ni alguien con acceso a la base puede leer tu información.",
+        "- Resumen YTD en Presupuesto: ahora podés ver el acumulado del año hasta la fecha sin tener que reconstruirlo mes a mes.",
+        "- Onboarding mejorado: el alta inicial es más clara, más rápida y con menos fricción.",
+        "- Flujo de patrimonio más simple: actualizar cuentas, fondos y movimientos es más directo y consistente.",
+        "",
+        "También te pedimos que entres en Cuenta y actualices Ubicación y Teléfono. Si alguna vez perdés tu clave, estos datos son claves para recuperar el acceso. Con E2EE, si no tenés recovery bien configurado, podrías no poder recuperar tu información histórica.",
         "",
         `Revisar mi cuenta: ${accountUrl}`,
         "",
-        "Gracias por ayudarnos a construir Ground.",
+        "Gracias por ayudarnos a construir Ground desde tan temprano.",
       ].join("\n"),
       html: wrapCampaignHtml({
         eyebrow: "Special Guest",
-        title: "Extendimos tu Early Stage a 4 meses",
+        title: "Extendimos tu Early Stage a 4 meses!",
         intro:
-          "Gracias por todo el feedback que nos vienes compartiendo. Nos esta ayudando a mejorar Ground mucho mas rapido.",
+          "Gracias. Venís acompañando Ground desde una etapa muy temprana, y todo el feedback que nos compartís nos está ayudando muchísimo a mejorar el producto más rápido y con mejor foco.",
         bodyLead:
-          "Queremos devolverte ese acompanamiento extendiendo tu acceso Early Stage a 4 meses sin costo e invitarte a ver lo ultimo que fuimos sumando en el producto.",
+          "Como entraste a Early Stage antes del 10 de abril de 2026, te catalogamos como Special Guest. Por eso extendimos tu período gratis a 4 meses y queríamos contártelo con un enorme gracias de por medio.",
+        highlightsTitle: "Esto es parte de lo último que sumamos en Ground",
         highlights: [
-          "Cifrado E2EE para proteger mejor tu informacion.",
-          "Resumen YTD en Presupuesto para seguir el ano acumulado mas facil.",
-          "Onboarding mejorado para una primera experiencia mas clara y rapida.",
-          "Flujo de patrimonio simplificado para actualizar cuentas, fondos y movimientos con menos friccion.",
+          "Cifrado de extremo a extremo (E2EE): lo que guardás queda cifrado de forma que solo vos podés descifrarlo. Ni nosotros ni alguien con acceso a la base puede leer tu información.",
+          "Resumen YTD en Presupuesto: ahora podés ver el acumulado del año hasta la fecha sin tener que reconstruirlo mes a mes.",
+          "Onboarding mejorado para una primera experiencia más clara, más ágil y con menos fricción.",
+          "Flujo de patrimonio más simple para actualizar cuentas, fondos y movimientos de forma más directa y consistente.",
         ],
-        recoveryTitle: "Ayudanos a proteger tu historial",
+        recoveryTitle: "Ayúdanos a proteger tu historial",
         recoveryBody:
-          "Entra en Cuenta y actualiza Ubicacion y Telefono. Si algun dia pierdes tu clave, estos datos son clave para recuperar el acceso. Con E2EE, si no tienes recovery bien configurado, podrias no poder recuperar tu informacion historica.",
+          "Entrá en Cuenta y actualizá Ubicación y Teléfono. Si algún día perdés tu clave, estos datos son claves para recuperar el acceso. Con E2EE, si no tenés recovery bien configurado, podrías no poder recuperar tu información histórica.",
         ctaLabel: "Revisar mi cuenta",
         ctaUrl: accountUrl,
-        footer: "Gracias por ayudarnos a construir Ground desde temprano.",
+        footer: "Gracias por ayudarnos a construir Ground desde tan temprano.",
       }),
     };
   }
 
   return {
-    subject: "We extended your Early Stage access to 4 months",
+    subject: "Your Early Stage access is now 4 months!",
     text: [
       "Hi,",
       "",
-      "Thank you for the feedback you keep sharing with us. It is helping us improve Ground much faster.",
+      "Thank you!",
       "",
-      "Because of that, we extended your Early Stage access to 4 months at no cost.",
+      "You have been with Ground from a very early stage, and the feedback you keep sharing with us is helping us improve the product much faster and with better focus.",
       "",
-      "Over the last few weeks we shipped important improvements:",
-      "- E2EE encryption",
-      "- YTD summary in Budget",
-      "- Improved onboarding",
-      "- Simpler net worth management flow",
+      "Because you joined Early Stage before April 10, 2026, we marked your account as Special Guest. That is why we extended your free period to 4 months.",
+      "",
+      "Over the last few weeks we also shipped important improvements:",
+      "- End-to-end encryption (E2EE): the data you store is encrypted in a way that only you can decrypt. Not even we, or someone with database access, can read your information.",
+      "- A YTD summary in Budget: you can now see the year-to-date view without rebuilding it month by month.",
+      "- Improved onboarding: the initial setup is clearer, faster, and has less friction.",
+      "- A simpler net worth flow: updating accounts, funds, and movements is now more direct and consistent.",
       "",
       "We also ask you to go to Account and update your Location and Phone. If you ever lose your password, this information is important to recover access. With E2EE, if recovery is not fully configured, you may not be able to recover your historical information.",
       "",
@@ -138,16 +156,17 @@ export function buildSpecialGuestCampaignEmail(language?: PreferredLanguage | st
     ].join("\n"),
     html: wrapCampaignHtml({
       eyebrow: "Special Guest",
-      title: "We extended your Early Stage access to 4 months",
+      title: "Your Early Stage access is now 4 months!",
       intro:
-        "Thank you for the feedback you keep sharing with us. It is helping us improve Ground much faster.",
+        "Thank you! You have been with Ground from a very early stage, and the feedback you keep sharing with us is helping us improve the product much faster and with better focus.",
       bodyLead:
-        "We wanted to give something back by extending your Early Stage access to 4 months at no cost and inviting you to explore the latest product improvements.",
+        "Because you joined Early Stage before April 10, 2026, we marked your account as Special Guest. That is why we extended your free period to 4 months, and we wanted to share that with a big thank you.",
+      highlightsTitle: "Here is some of what we shipped recently",
       highlights: [
-        "E2EE encryption to better protect your information.",
-        "A YTD summary in Budget to track the year more clearly.",
-        "Improved onboarding for a faster and clearer first experience.",
-        "A simpler net worth flow to update accounts, funds, and movements with less friction.",
+        "End-to-end encryption (E2EE): the data you store is encrypted in a way that only you can decrypt. Not even we, or someone with database access, can read your information.",
+        "A YTD summary in Budget so you can see the year-to-date view without rebuilding it month by month.",
+        "Improved onboarding for a clearer, faster first experience with less friction.",
+        "A simpler net worth flow to update accounts, funds, and movements more directly and consistently.",
       ],
       recoveryTitle: "Help us protect your history",
       recoveryBody:
