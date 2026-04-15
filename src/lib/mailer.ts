@@ -124,7 +124,12 @@ export async function sendSpecialGuestCampaignEmail(
 
 export async function sendExpenseReminderEmail(
   to: string,
-  input: { count: number; earliestDueDate: Date | null },
+  input: {
+    count: number;
+    earliestDueDate: Date | null;
+    nextDueLabels: string[];
+    monthlySchedule: Array<{ dueDate: Date; labels: string[] }>;
+  },
   language?: PreferredLanguage | string | null
 ) {
   const recipient = String(to || "").trim();

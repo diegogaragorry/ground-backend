@@ -6,6 +6,16 @@ const mailer_1 = require("../lib/mailer");
 const reminderMessages_1 = require("../lib/reminderMessages");
 const preferredLanguage_1 = require("../lib/preferredLanguage");
 const sms_1 = require("../lib/sms");
+function isEncryptedPlaceholder(value) {
+    return typeof value === "string" && /^\(encrypted(?:-[a-z0-9]{8})?\)$/i.test(String(value).trim());
+}
+function resolveReminderLabel(row) {
+    const explicit = String(row.reminderLabel ?? "").trim();
+    if (explicit)
+        return explicit;
+    const fallback = String(row.description ?? "").trim();
+    return fallback && !isEncryptedPlaceholder(fallback) ? fallback : null;
+}
 function groupRows(rows) {
     const map = new Map();
     for (const row of rows) {
@@ -28,6 +38,54 @@ function earliestDueDate(rows) {
     if (dates.length === 0)
         return null;
     return dates.sort((a, b) => a.getTime() - b.getTime())[0];
+}
+function monthBounds(referenceDate) {
+    const year = referenceDate.getUTCFullYear();
+    const month = referenceDate.getUTCMonth();
+    const start = new Date(Date.UTC(year, month, 1, 0, 0, 0));
+    const end = new Date(Date.UTC(year, month + 1, 1, 0, 0, 0));
+    return { start, end };
+}
+async function loadMonthlySchedule(userId, channel, referenceDate) {
+    const { start, end } = monthBounds(referenceDate);
+    const rows = await prisma_1.prisma.plannedExpense.findMany({
+        where: {
+            userId,
+            isConfirmed: false,
+            reminderResolvedAt: null,
+            reminderChannel: channel,
+            dueDate: { gte: start, lt: end },
+            OR: [{ templateId: null }, { template: { showInExpenses: true } }],
+        },
+        orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
+        select: {
+            dueDate: true,
+            reminderLabel: true,
+            description: true,
+        },
+    });
+    const grouped = new Map();
+    for (const row of rows) {
+        if (!(row.dueDate instanceof Date))
+            continue;
+        const label = resolveReminderLabel(row);
+        if (!label)
+            continue;
+        const key = row.dueDate.toISOString().slice(0, 10);
+        const existing = grouped.get(key);
+        if (existing) {
+            existing.labels.push(label);
+            continue;
+        }
+        grouped.set(key, { dueDate: row.dueDate, labels: [label] });
+    }
+    return {
+        count: rows.length,
+        schedule: [...grouped.values()].map((item) => ({
+            dueDate: item.dueDate,
+            labels: [...new Set(item.labels)],
+        })),
+    };
 }
 async function runDueExpenseReminders(limit = 100) {
     const now = new Date();
@@ -56,6 +114,8 @@ async function runDueExpenseReminders(limit = 100) {
             userId: true,
             reminderChannel: true,
             dueDate: true,
+            reminderLabel: true,
+            description: true,
             user: {
                 select: {
                     email: true,
@@ -72,9 +132,20 @@ async function runDueExpenseReminders(limit = 100) {
     for (const group of groups) {
         const first = group.rows[0];
         const language = (0, preferredLanguage_1.resolvePreferredLanguage)(first.user.preferredLanguage);
+        const referenceDate = earliestDueDate(group.rows) ?? now;
+        const monthlyOverview = await loadMonthlySchedule(group.userId, group.channel, referenceDate);
+        const monthlySchedule = monthlyOverview.schedule;
+        const nextDueKey = referenceDate.toISOString().slice(0, 10);
+        const nextDueLabels = monthlySchedule.find((item) => item.dueDate.toISOString().slice(0, 10) === nextDueKey)?.labels ??
+            [...new Set(group.rows
+                    .filter((row) => row.dueDate instanceof Date && row.dueDate.toISOString().slice(0, 10) === nextDueKey)
+                    .map((row) => resolveReminderLabel(row))
+                    .filter((value) => Boolean(value)))];
         const summary = {
-            count: group.rows.length,
-            earliestDueDate: earliestDueDate(group.rows),
+            count: Math.max(monthlyOverview.count, group.rows.length),
+            earliestDueDate: referenceDate,
+            nextDueLabels,
+            monthlySchedule,
         };
         try {
             if (group.channel === "EMAIL") {

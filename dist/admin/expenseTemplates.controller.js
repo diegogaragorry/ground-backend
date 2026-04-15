@@ -20,6 +20,13 @@ function parseAmountUsd(v) {
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
 }
+function parseReminderLabel(value, fallback) {
+    const explicit = String(value ?? "").trim();
+    if (explicit)
+        return explicit.slice(0, 120);
+    const fromFallback = String(fallback ?? "").trim();
+    return fromFallback ? fromFallback.slice(0, 120) : null;
+}
 function parseTemplateReminderConfig(body) {
     const reminderChannel = (0, reminderUtils_1.parseReminderChannel)(body?.reminderChannel) ?? "NONE";
     const dueDayOfMonth = (0, reminderUtils_1.parseDueDayOfMonth)(body?.dueDayOfMonth);
@@ -76,6 +83,7 @@ async function ensurePlannedForTemplate(userId, year, template, startMonth = 1) 
             expenseType: template.expenseType,
             categoryId: template.categoryId,
             description: template.description,
+            reminderLabel: template.reminderLabel ?? null,
             amountUsd: template.defaultAmountUsd,
             isConfirmed: false,
             ...(0, reminderUtils_1.materializeReminderForMonth)({
@@ -107,6 +115,7 @@ async function syncPlannedAfterTemplateUpdate(userId, year, template, startMonth
             expenseType: template.expenseType,
             categoryId: template.categoryId,
             description: template.description,
+            reminderLabel: template.reminderLabel ?? null,
             amountUsd: template.defaultAmountUsd,
             ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
         },
@@ -145,6 +154,7 @@ async function syncPlannedForTemplatesBatch(tx, userId, year, templates, monthsO
                 expenseType: template.expenseType,
                 categoryId: template.categoryId,
                 description: template.description,
+                reminderLabel: template.reminderLabel ?? null,
                 amountUsd: template.defaultAmountUsd ?? null,
                 isConfirmed: false,
                 ...(0, reminderUtils_1.materializeReminderForMonth)({
@@ -175,6 +185,7 @@ async function syncPlannedForTemplatesBatch(tx, userId, year, templates, monthsO
                 expenseType: template.expenseType,
                 categoryId: template.categoryId,
                 description: template.description,
+                reminderLabel: template.reminderLabel ?? null,
                 amountUsd: template.defaultAmountUsd ?? null,
                 ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
             },
@@ -247,10 +258,12 @@ const createExpenseTemplate = async (req, res) => {
         remindDaysBefore: 0,
     };
     let description;
+    let reminderLabel;
     let defaultAmountUsd;
     let defaultCurrencyId;
     if (hasEncrypted) {
         description = encryptedPlaceholder();
+        reminderLabel = parseReminderLabel(req.body?.reminderLabel);
         try {
             const parsed = parseTemplateAmount(req.body);
             defaultAmountUsd = parsed.defaultAmountUsd;
@@ -264,6 +277,7 @@ const createExpenseTemplate = async (req, res) => {
         description = String(req.body?.description ?? "").trim();
         if (!description)
             return res.status(400).json({ error: "description is required" });
+        reminderLabel = parseReminderLabel(req.body?.reminderLabel, description);
         try {
             const parsed = parseTemplateAmount(req.body);
             defaultAmountUsd = parsed.defaultAmountUsd;
@@ -300,6 +314,7 @@ const createExpenseTemplate = async (req, res) => {
                 expenseType: cat.expenseType,
                 categoryId,
                 description,
+                reminderLabel,
                 defaultAmountUsd,
                 defaultCurrencyId: defaultCurrencyId || "USD",
                 reminderChannel: reminderConfig.reminderChannel,
@@ -315,6 +330,7 @@ const createExpenseTemplate = async (req, res) => {
             expenseType: created.expenseType,
             categoryId: created.categoryId,
             description: created.description,
+            reminderLabel: created.reminderLabel,
             defaultAmountUsd: created.defaultAmountUsd ?? null,
             encryptedPayload: created.encryptedPayload ?? undefined,
             reminderChannel: created.reminderChannel,
@@ -337,6 +353,7 @@ const createExpenseTemplate = async (req, res) => {
                     expenseType: existing.expenseType,
                     categoryId: existing.categoryId,
                     description: existing.description,
+                    reminderLabel: reminderLabel ?? existing.reminderLabel ?? parseReminderLabel(existing.description),
                     defaultAmountUsd: defaultAmountUsd ?? existing.defaultAmountUsd ?? null,
                     encryptedPayload: existing.encryptedPayload ?? undefined,
                     reminderChannel: reminderConfig.reminderChannel,
@@ -349,6 +366,7 @@ const createExpenseTemplate = async (req, res) => {
                         data: {
                             ...(defaultAmountUsd !== undefined && defaultAmountUsd !== null ? { defaultAmountUsd } : {}),
                             ...(defaultCurrencyId ? { defaultCurrencyId } : {}),
+                            reminderLabel: reminderLabel ?? existing.reminderLabel ?? parseReminderLabel(existing.description),
                             reminderChannel: reminderConfig.reminderChannel,
                             dueDayOfMonth: reminderConfig.dueDayOfMonth,
                             remindDaysBefore: reminderConfig.remindDaysBefore,
@@ -386,6 +404,7 @@ const upsertExpenseTemplatesBatch = async (req, res) => {
         }
         const defaultAmountUsd = parseAmountUsd(raw?.defaultAmountUsd);
         const defaultCurrencyId = String(raw?.defaultCurrencyId ?? "USD").trim().toUpperCase() || "USD";
+        const reminderLabel = parseReminderLabel(raw?.reminderLabel, description);
         if (defaultCurrencyId !== "USD" && defaultCurrencyId !== "UYU") {
             return res.status(400).json({ error: "defaultCurrencyId must be USD or UYU" });
         }
@@ -403,6 +422,7 @@ const upsertExpenseTemplatesBatch = async (req, res) => {
             defaultAmountUsd,
             defaultCurrencyId,
             showInExpenses: raw?.showInExpenses !== false,
+            reminderLabel,
             reminderChannel: reminderConfig.reminderChannel,
             dueDayOfMonth: reminderConfig.dueDayOfMonth,
             remindDaysBefore: reminderConfig.remindDaysBefore,
@@ -455,6 +475,7 @@ const upsertExpenseTemplatesBatch = async (req, res) => {
                             defaultAmountUsd: template.defaultAmountUsd,
                             defaultCurrencyId: template.defaultCurrencyId,
                             showInExpenses: template.showInExpenses,
+                            reminderLabel: template.reminderLabel,
                             reminderChannel: template.reminderChannel,
                             dueDayOfMonth: template.dueDayOfMonth,
                             remindDaysBefore: template.remindDaysBefore,
@@ -477,6 +498,7 @@ const upsertExpenseTemplatesBatch = async (req, res) => {
                         defaultAmountUsd: template.defaultAmountUsd,
                         defaultCurrencyId: template.defaultCurrencyId,
                         showInExpenses: template.showInExpenses,
+                        reminderLabel: template.reminderLabel,
                         reminderChannel: template.reminderChannel,
                         dueDayOfMonth: template.dueDayOfMonth,
                         remindDaysBefore: template.remindDaysBefore,
@@ -495,6 +517,7 @@ const upsertExpenseTemplatesBatch = async (req, res) => {
                 expenseType: template.expenseType,
                 categoryId: template.categoryId,
                 description: template.description,
+                reminderLabel: template.reminderLabel,
                 defaultAmountUsd: template.defaultAmountUsd ?? null,
                 encryptedPayload: template.encryptedPayload ?? undefined,
                 reminderChannel: template.reminderChannel,
@@ -529,6 +552,7 @@ const updateExpenseTemplate = async (req, res) => {
             expenseType: true,
             defaultCurrencyId: true,
             defaultAmountUsd: true,
+            reminderLabel: true,
             reminderChannel: true,
             dueDayOfMonth: true,
             remindDaysBefore: true,
@@ -538,12 +562,14 @@ const updateExpenseTemplate = async (req, res) => {
         return res.status(404).json({ error: "Template not found" });
     const patch = {};
     const hasEncrypted = typeof req.body?.encryptedPayload === "string" && req.body.encryptedPayload.length > 0;
+    const reminderLabelFromRequest = req.body?.reminderLabel !== undefined ? parseReminderLabel(req.body?.reminderLabel) : undefined;
     if (hasEncrypted) {
         patch.encryptedPayload = req.body.encryptedPayload;
         patch.description = encryptedPlaceholder();
         // Preserve the numeric default already stored in DB so a stale encryption snapshot
         // cannot erase amounts that the onboarding just saved milliseconds earlier.
         patch.defaultAmountUsd = existing.defaultAmountUsd ?? null;
+        patch.reminderLabel = reminderLabelFromRequest ?? existing.reminderLabel ?? null;
     }
     // categoryId (and type derived from it)
     if (req.body?.categoryId != null) {
@@ -566,7 +592,11 @@ const updateExpenseTemplate = async (req, res) => {
             if (!d)
                 return res.status(400).json({ error: "description is required" });
             patch.description = d;
+            patch.reminderLabel = reminderLabelFromRequest ?? parseReminderLabel(d);
         }
+    }
+    if (!hasEncrypted && reminderLabelFromRequest !== undefined) {
+        patch.reminderLabel = reminderLabelFromRequest;
     }
     // defaultAmountUsd / defaultCurrencyId
     if (req.body?.defaultAmountUsd !== undefined ||
@@ -623,6 +653,7 @@ const updateExpenseTemplate = async (req, res) => {
                 expenseType: updated.expenseType,
                 categoryId: updated.categoryId,
                 description: updated.description,
+                reminderLabel: updated.reminderLabel,
                 defaultAmountUsd: updated.defaultAmountUsd ?? null,
                 encryptedPayload: updated.encryptedPayload ?? undefined,
                 reminderChannel: updated.reminderChannel,

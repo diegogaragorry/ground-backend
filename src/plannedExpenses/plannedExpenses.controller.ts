@@ -56,6 +56,13 @@ function parseUsdUyuRate(v: any) {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+function parseReminderLabel(value: any, fallback?: string | null) {
+  const explicit = String(value ?? "").trim();
+  if (explicit) return explicit.slice(0, 120);
+  const fromFallback = String(fallback ?? "").trim();
+  return fromFallback ? fromFallback.slice(0, 120) : null;
+}
+
 type PlannedExpenseForConfirm = {
   id: string;
   userId: string;
@@ -64,6 +71,7 @@ type PlannedExpenseForConfirm = {
   expenseType: "FIXED" | "VARIABLE";
   categoryId: string;
   description: string;
+  reminderLabel: string | null;
   amountUsd: number | null;
   amount: number | null;
   usdUyuRate: number | null;
@@ -105,6 +113,7 @@ function buildPlannedPatchData(
   if (hasEncrypted) {
     patch.encryptedPayload = body.encryptedPayload;
     patch.description = encryptedPlaceholder();
+    patch.reminderLabel = parseReminderLabel(body?.reminderLabel, pe.reminderLabel);
     patch.amountUsd = 0;
     patch.amount = 0;
   } else {
@@ -130,7 +139,12 @@ function buildPlannedPatchData(
       const d = String(body.description ?? "").trim();
       if (!d) throw new Error("description is required");
       patch.description = d;
+      patch.reminderLabel = parseReminderLabel(body?.reminderLabel, d);
     }
+  }
+
+  if (!hasEncrypted && body?.reminderLabel !== undefined) {
+    patch.reminderLabel = parseReminderLabel(body?.reminderLabel);
   }
 
   if (body?.categoryId != null) {
@@ -242,6 +256,7 @@ async function ensurePlannedForYear(userId: string, year: number) {
       expenseType: true,
       categoryId: true,
       description: true,
+      reminderLabel: true,
       defaultAmountUsd: true,
       encryptedPayload: true,
       reminderChannel: true,
@@ -279,6 +294,7 @@ async function ensurePlannedForYear(userId: string, year: number) {
         expenseType: template.expenseType,
         categoryId: template.categoryId,
         description: template.description,
+        reminderLabel: (template as any).reminderLabel ?? null,
         amountUsd: template.defaultAmountUsd,
         isConfirmed: false,
         ...materializeReminderForMonth({
@@ -382,6 +398,7 @@ export const updatePlannedExpense = async (req: AuthRequest, res: Response) => {
   if (hasEncrypted) {
     patch.encryptedPayload = req.body.encryptedPayload;
     patch.description = encryptedPlaceholder();
+    patch.reminderLabel = parseReminderLabel(req.body?.reminderLabel, (pe as any).reminderLabel ?? null);
     patch.amountUsd = 0;
     patch.amount = 0;
   } else {
@@ -408,7 +425,12 @@ export const updatePlannedExpense = async (req: AuthRequest, res: Response) => {
     const d = String(req.body.description ?? "").trim();
     if (!d) return res.status(400).json({ error: "description is required" });
     patch.description = d;
+    patch.reminderLabel = parseReminderLabel(req.body?.reminderLabel, d);
   }
+  }
+
+  if (!hasEncrypted && req.body?.reminderLabel !== undefined) {
+    patch.reminderLabel = parseReminderLabel(req.body?.reminderLabel);
   }
 
   if (req.body?.categoryId != null) {
@@ -660,6 +682,7 @@ export const confirmPlannedExpensesBatch = async (req: AuthRequest, res: Respons
           expenseType: base.expenseType,
           categoryId: base.categoryId,
           description: base.description,
+          reminderLabel: (base as any).reminderLabel ?? null,
           amountUsd: base.amountUsd ?? null,
           amount: (base as any).amount ?? null,
           usdUyuRate: (base as any).usdUyuRate ?? null,

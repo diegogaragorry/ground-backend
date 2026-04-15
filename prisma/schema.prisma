@@ -432,6 +432,7 @@ model ExpenseTemplate {
   showInExpenses Boolean @default(true)
 
   reminderChannel ReminderChannel @default(NONE)
+  reminderLabel    String?
   dueDayOfMonth   Int?
   remindDaysBefore Int @default(0)
 
@@ -465,6 +466,7 @@ model PlannedExpense {
   isConfirmed Boolean @default(false)
 
   reminderChannel    ReminderChannel @default(NONE)
+  reminderLabel      String?
   dueDate            DateTime?
   remindAt           DateTime?
   remindDaysBefore   Int             @default(0)
