@@ -54,8 +54,6 @@ function buildExpenseReminderEmail(input, language) {
             "",
             "Abrí la sección Gastos para revisar los borradores y confirmarlos:",
             "https://ground.finance/app/expenses",
-            "",
-            "Por privacidad, el detalle sensible se mantiene cifrado dentro de la app.",
         ].join("\n");
         const html = `
       <div style="font-family: Arial, sans-serif; color: #0f172a; line-height: 1.5;">
@@ -85,9 +83,6 @@ function buildExpenseReminderEmail(input, language) {
         <p style="margin: 0 0 20px;">
           <a href="https://ground.finance/app/expenses" style="display: inline-block; background: #22c55e; color: white; text-decoration: none; padding: 10px 16px; border-radius: 999px; font-weight: 700;">Abrir Gastos</a>
         </p>
-        <p style="margin: 0; color: rgba(15, 23, 42, 0.7); font-size: 14px;">
-          Por privacidad, el detalle sensible se mantiene cifrado dentro de la app.
-        </p>
       </div>
     `.trim();
         return { subject, text, html };
@@ -104,8 +99,6 @@ function buildExpenseReminderEmail(input, language) {
         "",
         "Open Expenses to review your drafts and confirm them:",
         "https://ground.finance/app/expenses",
-        "",
-        "For privacy, sensitive details stay encrypted inside the app.",
     ].join("\n");
     const html = `
     <div style="font-family: Arial, sans-serif; color: #0f172a; line-height: 1.5;">
@@ -134,9 +127,6 @@ function buildExpenseReminderEmail(input, language) {
       </p>
       <p style="margin: 0 0 20px;">
         <a href="https://ground.finance/app/expenses" style="display: inline-block; background: #22c55e; color: white; text-decoration: none; padding: 10px 16px; border-radius: 999px; font-weight: 700;">Open Expenses</a>
-      </p>
-      <p style="margin: 0; color: rgba(15, 23, 42, 0.7); font-size: 14px;">
-        For privacy, sensitive details stay encrypted inside the app.
       </p>
     </div>
   `.trim();
