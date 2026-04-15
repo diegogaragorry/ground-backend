@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 import { buildPasswordResetCodeEmail, buildSignupCodeEmail } from "./authMessages";
 import { buildSpecialGuestCampaignEmail } from "./campaignMessages";
+import { buildExpenseReminderEmail } from "./reminderMessages";
 import type { PreferredLanguage } from "./preferredLanguage";
 
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
@@ -118,5 +119,17 @@ export async function sendSpecialGuestCampaignEmail(
   if (!recipient) throw new Error("Missing recipient email (to)");
 
   const { subject, text, html } = buildSpecialGuestCampaignEmail(language);
+  await sendEmailTemplate(recipient, subject, html, text);
+}
+
+export async function sendExpenseReminderEmail(
+  to: string,
+  input: { count: number; earliestDueDate: Date | null },
+  language?: PreferredLanguage | string | null
+) {
+  const recipient = String(to || "").trim();
+  if (!recipient) throw new Error("Missing recipient email (to)");
+
+  const { subject, text, html } = buildExpenseReminderEmail(input, language);
   await sendEmailTemplate(recipient, subject, html, text);
 }

@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.finalizeOnboarding = exports.phoneVerify = exports.phoneRequest = exports.patchMe = exports.me = exports.login = exports.forgotPasswordVerify = exports.forgotPasswordRequestCode = exports.registerVerify = exports.registerRequestCode = void 0;
+exports.finalizeOnboarding = exports.getOnboardingContext = exports.phoneVerify = exports.phoneRequest = exports.patchMe = exports.me = exports.login = exports.forgotPasswordVerify = exports.forgotPasswordRequestCode = exports.registerVerify = exports.registerRequestCode = void 0;
 const bcrypt_1 = __importDefault(require("bcrypt"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const crypto_1 = __importDefault(require("crypto"));
@@ -29,6 +29,27 @@ function parseMonth(v) {
     if (!Number.isInteger(n) || n < 1 || n > 12)
         return null;
     return n;
+}
+function normalizeOnboardingSourceKey(value, prefix, index) {
+    const raw = String(value ?? "").trim();
+    if (/^[a-z0-9:_-]{1,120}$/i.test(raw) && raw.startsWith(prefix))
+        return raw;
+    return `${prefix}${index}`;
+}
+function sourceKeyIndex(sourceKey, prefix) {
+    if (!sourceKey.startsWith(prefix))
+        return Number.MAX_SAFE_INTEGER;
+    const parsed = Number(sourceKey.slice(prefix.length));
+    return Number.isInteger(parsed) && parsed >= 0 ? parsed : Number.MAX_SAFE_INTEGER;
+}
+function toSnapshotCapitalUsd(amount, currencyId, usdUyuRate) {
+    if (currencyId === "USD")
+        return amount;
+    return (0, fx_1.toUsd)({
+        amount,
+        currencyId: "UYU",
+        usdUyuRate: usdUyuRate ?? Number(process.env.DEFAULT_USD_UYU_RATE ?? 38),
+    }).amountUsd;
 }
 function gen6() {
     return String(Math.floor(100000 + Math.random() * 900000));
@@ -723,6 +744,191 @@ const phoneVerify = async (req, res) => {
 };
 exports.phoneVerify = phoneVerify;
 /**
+ * GET /auth/me/onboarding/context?year=YYYY&month=MM
+ * Returns onboarding-managed accounts and portfolios so the wizard can reopen without duplicating assets.
+ */
+const getOnboardingContext = async (req, res) => {
+    const userId = req.userId;
+    const year = Number(req.query.year) || new Date().getUTCFullYear();
+    const month = parseMonth(req.query.month) ?? new Date().getUTCMonth() + 1;
+    const knownTemplateCategoryNames = [
+        "Housing",
+        "Transport",
+        "Utilities",
+        "Connectivity",
+        "Health & Wellness",
+        "Wellness",
+        "Food & Grocery",
+        "Dining & Leisure",
+        "Sports",
+        "Gifts & Social",
+    ];
+    const knownTemplateDescriptions = [
+        "Rent",
+        "Mortgage",
+        "Building Fees",
+        "Property Taxes",
+        "Fuel",
+        "Public Transport",
+        "Ride Sharing / Taxis",
+        "Electricity",
+        "Water",
+        "Gas",
+        "Internet / Fiber",
+        "Mobile Phone",
+        "TV / Cable",
+        "Streaming Services",
+        "Other online (Spotify, etc.)",
+        "Private Health Insurance",
+        "Gym Membership",
+        "Pharmacy",
+        "Personal Care",
+        "Psychologist",
+        "Groceries",
+        "Holiday Gifts",
+        "Donations / Raffles",
+        "Tenis, Surf, Football / Others",
+        "Restaurants",
+        "Coffee & Snacks",
+        "Delivery",
+        "Events & Concerts",
+    ];
+    const [investments, snapshots, incomeRow, templates] = await Promise.all([
+        prisma_1.prisma.investment.findMany({
+            where: { userId, type: { in: ["ACCOUNT", "PORTFOLIO"] } },
+            orderBy: [{ createdAt: "asc" }],
+            select: {
+                id: true,
+                name: true,
+                type: true,
+                currencyId: true,
+                targetAnnualReturn: true,
+                onboardingSourceKey: true,
+            },
+        }),
+        prisma_1.prisma.investmentSnapshot.findMany({
+            where: {
+                investment: { userId },
+                OR: [
+                    { year: { lt: year } },
+                    { year, month: { lte: month } },
+                ],
+            },
+            orderBy: [{ year: "desc" }, { month: "desc" }],
+            select: {
+                investmentId: true,
+                year: true,
+                month: true,
+                capital: true,
+                capitalUsd: true,
+                encryptedPayload: true,
+            },
+        }),
+        prisma_1.prisma.income.findUnique({
+            where: {
+                userId_year_month: {
+                    userId,
+                    year,
+                    month,
+                },
+            },
+            select: {
+                amountUsd: true,
+                nominalUsd: true,
+                taxesUsd: true,
+                encryptedPayload: true,
+            },
+        }),
+        prisma_1.prisma.expenseTemplate.findMany({
+            where: {
+                userId,
+                OR: [
+                    { onboardingSourceKey: { startsWith: "onboarding:template:" } },
+                    { description: { in: knownTemplateDescriptions } },
+                    { category: { name: { in: knownTemplateCategoryNames } } },
+                ],
+            },
+            orderBy: [{ createdAt: "asc" }],
+            select: {
+                id: true,
+                description: true,
+                categoryId: true,
+                defaultAmountUsd: true,
+                defaultCurrencyId: true,
+                encryptedPayload: true,
+                expenseType: true,
+                showInExpenses: true,
+                onboardingSourceKey: true,
+            },
+        }),
+    ]);
+    const snapByInvestmentId = new Map();
+    for (const row of snapshots) {
+        if (!snapByInvestmentId.has(row.investmentId)) {
+            snapByInvestmentId.set(row.investmentId, row);
+        }
+    }
+    const savingsPrefix = "onboarding:savings:";
+    const investmentPrefix = "onboarding:investment:";
+    const accountRows = investments.filter((row) => row.type === "ACCOUNT");
+    const taggedAccounts = accountRows.filter((row) => row.onboardingSourceKey?.startsWith(savingsPrefix));
+    const accountSeed = taggedAccounts.length > 0 ? taggedAccounts : accountRows;
+    const portfolioRows = investments.filter((row) => row.type === "PORTFOLIO");
+    const taggedPortfolios = portfolioRows.filter((row) => row.onboardingSourceKey?.startsWith(investmentPrefix));
+    const portfolioSeed = taggedPortfolios.length > 0 ? taggedPortfolios : portfolioRows;
+    const savingsAccounts = accountSeed
+        .map((row, idx) => {
+        const sourceKey = row.onboardingSourceKey ?? `${savingsPrefix}${idx}`;
+        const snap = snapByInvestmentId.get(row.id);
+        return {
+            sourceKey,
+            investmentId: row.id,
+            name: row.name,
+            currencyId: (row.currencyId ?? "USD").toUpperCase(),
+            capital: Number.isFinite(Number(snap?.capital)) ? Number(snap?.capital) : 0,
+            capitalUsd: Number.isFinite(Number(snap?.capitalUsd)) ? Number(snap?.capitalUsd) : 0,
+            encryptedPayload: snap?.encryptedPayload ?? null,
+            snapshotYear: snap?.year ?? null,
+            snapshotMonth: snap?.month ?? null,
+        };
+    })
+        .sort((a, b) => sourceKeyIndex(a.sourceKey, savingsPrefix) - sourceKeyIndex(b.sourceKey, savingsPrefix));
+    const portfolios = portfolioSeed
+        .map((row, idx) => {
+        const sourceKey = row.onboardingSourceKey ?? `${investmentPrefix}${idx}`;
+        const snap = snapByInvestmentId.get(row.id);
+        return {
+            sourceKey,
+            investmentId: row.id,
+            name: row.name,
+            currencyId: (row.currencyId ?? "USD").toUpperCase(),
+            capital: Number.isFinite(Number(snap?.capital)) ? Number(snap?.capital) : 0,
+            capitalUsd: Number.isFinite(Number(snap?.capitalUsd)) ? Number(snap?.capitalUsd) : 0,
+            encryptedPayload: snap?.encryptedPayload ?? null,
+            snapshotYear: snap?.year ?? null,
+            snapshotMonth: snap?.month ?? null,
+            targetAnnualReturn: Number.isFinite(Number(row.targetAnnualReturn)) ? Number(row.targetAnnualReturn) : 0,
+        };
+    })
+        .sort((a, b) => sourceKeyIndex(a.sourceKey, investmentPrefix) - sourceKeyIndex(b.sourceKey, investmentPrefix));
+    return res.json({
+        year,
+        month,
+        incomeWork: incomeRow
+            ? {
+                amountUsd: incomeRow.amountUsd,
+                nominalUsd: incomeRow.nominalUsd,
+                taxesUsd: incomeRow.taxesUsd,
+                encryptedPayload: incomeRow.encryptedPayload,
+            }
+            : null,
+        savingsAccounts,
+        investments: portfolios,
+        templates,
+    });
+};
+exports.getOnboardingContext = getOnboardingContext;
+/**
  * POST /auth/me/onboarding/finalize
  * Batches the wizard's final step to avoid many round-trips on first login.
  */
@@ -736,7 +942,20 @@ const finalizeOnboarding = async (req, res) => {
     }
     const income = body?.incomeWork;
     const savings = body?.savings;
+    const rawSavingsAccounts = Array.isArray(body?.savingsAccounts) ? body.savingsAccounts : [];
     const investments = Array.isArray(body?.investments) ? body.investments : [];
+    const savingsAccounts = rawSavingsAccounts.length > 0
+        ? rawSavingsAccounts
+        : (savings?.enabled
+            ? [{
+                    sourceKey: "onboarding:savings:0",
+                    investmentId: null,
+                    name: savings.accountName,
+                    currencyId: savings.currencyId,
+                    capital: savings.capital,
+                    usdUyuRate: savings.usdUyuRate,
+                }]
+            : []);
     const monthRange = Array.from({ length: 12 - currentMonth + 1 }, (_, idx) => currentMonth + idx);
     const previousMonth = currentMonth === 1 ? 12 : currentMonth - 1;
     const previousMonthYear = currentMonth === 1 ? year - 1 : year;
@@ -781,29 +1000,47 @@ const finalizeOnboarding = async (req, res) => {
                     }
                 }
             }
-            let bankAccountId = null;
-            if (savings?.enabled) {
-                const currencyId = String(savings.currencyId ?? "USD").trim().toUpperCase();
-                const capital = Number(savings.capital ?? 0);
-                const usdUyuRateRaw = savings.usdUyuRate == null ? null : Number(savings.usdUyuRate);
+            const bankAccountIds = [];
+            for (let idx = 0; idx < savingsAccounts.length; idx += 1) {
+                const rawAccount = savingsAccounts[idx];
+                const sourceKey = normalizeOnboardingSourceKey(rawAccount?.sourceKey, "onboarding:savings:", idx);
+                const currencyId = String(rawAccount?.currencyId ?? "USD").trim().toUpperCase();
+                const capital = Number(rawAccount?.capital ?? 0);
+                const usdUyuRateRaw = rawAccount?.usdUyuRate == null ? null : Number(rawAccount.usdUyuRate);
                 const usdUyuRate = Number.isFinite(usdUyuRateRaw) && usdUyuRateRaw > 0 ? usdUyuRateRaw : null;
                 if ((currencyId !== "USD" && currencyId !== "UYU") || !Number.isFinite(capital) || capital < 0) {
                     throw new Error("Invalid savings payload");
                 }
-                const account = await tx.investment.findFirst({
-                    where: { userId, type: "ACCOUNT" },
-                    orderBy: { createdAt: "asc" },
+                let account = await tx.investment.findUnique({
+                    where: { userId_onboardingSourceKey: { userId, onboardingSourceKey: sourceKey } },
                 });
+                const requestedInvestmentId = String(rawAccount?.investmentId ?? "").trim();
+                if (!account && requestedInvestmentId) {
+                    const candidate = await tx.investment.findFirst({
+                        where: { id: requestedInvestmentId, userId, type: "ACCOUNT" },
+                    });
+                    if (candidate) {
+                        account = await tx.investment.update({
+                            where: { id: candidate.id },
+                            data: { onboardingSourceKey: sourceKey },
+                        });
+                    }
+                }
+                const accountName = String(rawAccount?.name ?? rawAccount?.accountName ?? "").trim() || `Bank account ${idx + 1}`;
                 if (account) {
-                    bankAccountId = account.id;
-                    await tx.investment.update({
+                    account = await tx.investment.update({
                         where: { id: account.id },
-                        data: { currencyId },
+                        data: {
+                            name: accountName,
+                            currencyId,
+                            type: "ACCOUNT",
+                            targetAnnualReturn: 0,
+                            onboardingSourceKey: sourceKey,
+                        },
                     });
                 }
                 else {
-                    const accountName = String(savings.accountName ?? "Bank account").trim() || "Bank account";
-                    const created = await tx.investment.create({
+                    account = await tx.investment.create({
                         data: {
                             userId,
                             name: accountName,
@@ -812,33 +1049,32 @@ const finalizeOnboarding = async (req, res) => {
                             targetAnnualReturn: 0,
                             yieldStartYear: year,
                             yieldStartMonth: currentMonth,
-                        },
-                    });
-                    bankAccountId = created.id;
-                }
-                if (bankAccountId) {
-                    const capitalUsd = currencyId === "USD"
-                        ? capital
-                        : (0, fx_1.toUsd)({ amount: capital, currencyId: "UYU", usdUyuRate: usdUyuRate ?? Number(process.env.DEFAULT_USD_UYU_RATE ?? 38) }).amountUsd;
-                    await tx.investmentSnapshot.upsert({
-                        where: { investmentId_year_month: { investmentId: bankAccountId, year, month: currentMonth } },
-                        update: { capital, capitalUsd },
-                        create: {
-                            investmentId: bankAccountId,
-                            year,
-                            month: currentMonth,
-                            capital,
-                            capitalUsd,
-                            isClosed: false,
+                            onboardingSourceKey: sourceKey,
                         },
                     });
                 }
+                bankAccountIds.push(account.id);
+                const capitalUsd = toSnapshotCapitalUsd(capital, currencyId, usdUyuRate);
+                await tx.investmentSnapshot.upsert({
+                    where: { investmentId_year_month: { investmentId: account.id, year, month: currentMonth } },
+                    update: { capital, capitalUsd },
+                    create: {
+                        investmentId: account.id,
+                        year,
+                        month: currentMonth,
+                        capital,
+                        capitalUsd,
+                        isClosed: false,
+                    },
+                });
             }
-            const createdInvestments = [];
-            for (const rawInvestment of investments) {
+            const upsertedInvestments = [];
+            for (let idx = 0; idx < investments.length; idx += 1) {
+                const rawInvestment = investments[idx];
                 const name = String(rawInvestment?.name ?? "").trim();
                 if (!name)
                     continue;
+                const sourceKey = normalizeOnboardingSourceKey(rawInvestment?.sourceKey, "onboarding:investment:", idx);
                 const currencyId = String(rawInvestment?.currencyId ?? "USD").trim().toUpperCase();
                 const capital = Number(rawInvestment?.capital ?? 0);
                 const annualReturn = Number(rawInvestment?.targetAnnualReturn ?? 0);
@@ -847,24 +1083,54 @@ const finalizeOnboarding = async (req, res) => {
                 if ((currencyId !== "USD" && currencyId !== "UYU") || !Number.isFinite(capital) || capital < 0 || !Number.isFinite(annualReturn) || annualReturn < 0) {
                     throw new Error("Invalid investments payload");
                 }
-                const created = await tx.investment.create({
-                    data: {
-                        userId,
-                        name,
-                        type: "PORTFOLIO",
-                        currencyId,
-                        targetAnnualReturn: annualReturn,
-                        yieldStartYear: year,
-                        yieldStartMonth: currentMonth,
-                    },
+                let investment = await tx.investment.findUnique({
+                    where: { userId_onboardingSourceKey: { userId, onboardingSourceKey: sourceKey } },
                 });
-                createdInvestments.push(created.id);
-                const capitalUsd = currencyId === "USD"
-                    ? capital
-                    : (0, fx_1.toUsd)({ amount: capital, currencyId: "UYU", usdUyuRate: usdUyuRate ?? Number(process.env.DEFAULT_USD_UYU_RATE ?? 38) }).amountUsd;
-                await tx.investmentSnapshot.create({
-                    data: {
-                        investmentId: created.id,
+                const requestedInvestmentId = String(rawInvestment?.investmentId ?? "").trim();
+                if (!investment && requestedInvestmentId) {
+                    const candidate = await tx.investment.findFirst({
+                        where: { id: requestedInvestmentId, userId, type: "PORTFOLIO" },
+                    });
+                    if (candidate) {
+                        investment = await tx.investment.update({
+                            where: { id: candidate.id },
+                            data: { onboardingSourceKey: sourceKey },
+                        });
+                    }
+                }
+                if (investment) {
+                    investment = await tx.investment.update({
+                        where: { id: investment.id },
+                        data: {
+                            name,
+                            type: "PORTFOLIO",
+                            currencyId,
+                            targetAnnualReturn: annualReturn,
+                            onboardingSourceKey: sourceKey,
+                        },
+                    });
+                }
+                else {
+                    investment = await tx.investment.create({
+                        data: {
+                            userId,
+                            name,
+                            type: "PORTFOLIO",
+                            currencyId,
+                            targetAnnualReturn: annualReturn,
+                            yieldStartYear: year,
+                            yieldStartMonth: currentMonth,
+                            onboardingSourceKey: sourceKey,
+                        },
+                    });
+                }
+                upsertedInvestments.push(investment.id);
+                const capitalUsd = toSnapshotCapitalUsd(capital, currencyId, usdUyuRate);
+                await tx.investmentSnapshot.upsert({
+                    where: { investmentId_year_month: { investmentId: investment.id, year, month: currentMonth } },
+                    update: { capital, capitalUsd },
+                    create: {
+                        investmentId: investment.id,
                         year,
                         month: currentMonth,
                         capital,
@@ -872,10 +1138,24 @@ const finalizeOnboarding = async (req, res) => {
                         isClosed: false,
                     },
                 });
+                const movementSourceKey = `${sourceKey}:initial-deposit`;
                 if (capital > 0) {
-                    await tx.investmentMovement.create({
-                        data: {
-                            investmentId: created.id,
+                    await tx.investmentMovement.upsert({
+                        where: {
+                            investmentId_onboardingSourceKey: {
+                                investmentId: investment.id,
+                                onboardingSourceKey: movementSourceKey,
+                            },
+                        },
+                        update: {
+                            date: new Date(Date.UTC(previousMonthYear, previousMonth - 1, 1, 0, 0, 0)),
+                            type: "deposit",
+                            currencyId,
+                            amount: capital,
+                        },
+                        create: {
+                            investmentId: investment.id,
+                            onboardingSourceKey: movementSourceKey,
                             date: new Date(Date.UTC(previousMonthYear, previousMonth - 1, 1, 0, 0, 0)),
                             type: "deposit",
                             currencyId,
@@ -883,10 +1163,19 @@ const finalizeOnboarding = async (req, res) => {
                         },
                     });
                 }
+                else {
+                    await tx.investmentMovement.deleteMany({
+                        where: {
+                            investmentId: investment.id,
+                            onboardingSourceKey: movementSourceKey,
+                        },
+                    });
+                }
             }
             return {
-                bankAccountId,
-                createdInvestments,
+                bankAccountId: bankAccountIds[0] ?? null,
+                bankAccountIds,
+                upsertedInvestments,
             };
         });
         return res.json({ ok: true, ...result });

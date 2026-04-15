@@ -4,6 +4,7 @@ exports.ensureYearPlanned = exports.confirmPlannedExpensesBatch = exports.confir
 // src/plannedExpenses/plannedExpenses.controller.ts
 const crypto_1 = require("crypto");
 const prisma_1 = require("../lib/prisma");
+const reminderUtils_1 = require("../reminders/reminderUtils");
 const ENCRYPTED_PLACEHOLDER_PREFIX = "(encrypted-";
 const ENCRYPTED_PLACEHOLDER_SUFFIX = ")";
 function encryptedPlaceholder() {
@@ -53,6 +54,18 @@ function parseUsdUyuRate(v) {
 function buildPlannedPatchData(pe, body, categoryExpenseTypeMap) {
     const patch = {};
     const hasEncrypted = typeof body?.encryptedPayload === "string" && body.encryptedPayload.length > 0;
+    if (body?.clearReminder === true) {
+        Object.assign(patch, {
+            reminderChannel: "NONE",
+            dueDate: null,
+            remindAt: null,
+            remindDaysBefore: 0,
+            reminderOverridden: true,
+            emailReminderSentAt: null,
+            smsReminderSentAt: null,
+            reminderResolvedAt: null,
+        });
+    }
     if (hasEncrypted) {
         patch.encryptedPayload = body.encryptedPayload;
         patch.description = encryptedPlaceholder();
@@ -92,6 +105,19 @@ function buildPlannedPatchData(pe, body, categoryExpenseTypeMap) {
             throw new Error("Invalid categoryId for this user");
         patch.categoryId = categoryId;
         patch.expenseType = expenseType;
+    }
+    if (body?.dueDate !== undefined && body?.clearReminder !== true) {
+        if (pe.reminderChannel === "NONE") {
+            throw new Error("This draft has no reminder configured");
+        }
+        const dueDate = (0, reminderUtils_1.parseReminderDateInput)(body.dueDate, pe.year, pe.month);
+        if (!dueDate)
+            throw new Error("dueDate must be a valid date within the same month");
+        Object.assign(patch, (0, reminderUtils_1.applyDueDateOverride)({
+            dueDate,
+            reminderChannel: pe.reminderChannel,
+            remindDaysBefore: pe.remindDaysBefore,
+        }));
     }
     return patch;
 }
@@ -165,6 +191,9 @@ async function ensurePlannedForYear(userId, year) {
             description: true,
             defaultAmountUsd: true,
             encryptedPayload: true,
+            reminderChannel: true,
+            dueDayOfMonth: true,
+            remindDaysBefore: true,
         },
     });
     if (templates.length === 0)
@@ -196,6 +225,13 @@ async function ensurePlannedForYear(userId, year) {
         description: template.description,
         amountUsd: template.defaultAmountUsd,
         isConfirmed: false,
+        ...(0, reminderUtils_1.materializeReminderForMonth)({
+            year,
+            month,
+            reminderChannel: template.reminderChannel,
+            dueDayOfMonth: template.dueDayOfMonth,
+            remindDaysBefore: template.remindDaysBefore,
+        }),
         ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
     })));
     if (missingRows.length > 0) {
@@ -320,6 +356,32 @@ const updatePlannedExpense = async (req, res) => {
         patch.categoryId = categoryId;
         patch.expenseType = cat.expenseType;
     }
+    if (req.body?.clearReminder === true) {
+        Object.assign(patch, {
+            reminderChannel: "NONE",
+            dueDate: null,
+            remindAt: null,
+            remindDaysBefore: 0,
+            reminderOverridden: true,
+            emailReminderSentAt: null,
+            smsReminderSentAt: null,
+            reminderResolvedAt: null,
+        });
+    }
+    if (req.body?.dueDate !== undefined && req.body?.clearReminder !== true) {
+        if (pe.reminderChannel === "NONE") {
+            return res.status(400).json({ error: "This draft has no reminder configured" });
+        }
+        const dueDate = (0, reminderUtils_1.parseReminderDateInput)(req.body.dueDate, pe.year, pe.month);
+        if (!dueDate) {
+            return res.status(400).json({ error: "dueDate must be a valid date within the same month" });
+        }
+        Object.assign(patch, (0, reminderUtils_1.applyDueDateOverride)({
+            dueDate,
+            reminderChannel: pe.reminderChannel,
+            remindDaysBefore: pe.remindDaysBefore,
+        }));
+    }
     const updated = await prisma_1.prisma.plannedExpense.update({
         where: { id },
         data: patch,
@@ -425,7 +487,7 @@ const confirmPlannedExpense = async (req, res) => {
         });
         await tx.plannedExpense.update({
             where: { id: pe.id },
-            data: { isConfirmed: true },
+            data: { isConfirmed: true, reminderResolvedAt: new Date() },
         });
         return exp.id;
     });
@@ -507,6 +569,14 @@ const confirmPlannedExpensesBatch = async (req, res) => {
                     usdUyuRate: base.usdUyuRate ?? null,
                     isConfirmed: base.isConfirmed,
                     encryptedPayload: base.encryptedPayload ?? null,
+                    reminderChannel: base.reminderChannel ?? "NONE",
+                    dueDate: base.dueDate ?? null,
+                    remindAt: base.remindAt ?? null,
+                    remindDaysBefore: Number(base.remindDaysBefore ?? 0),
+                    reminderOverridden: Boolean(base.reminderOverridden),
+                    emailReminderSentAt: base.emailReminderSentAt ?? null,
+                    smsReminderSentAt: base.smsReminderSentAt ?? null,
+                    reminderResolvedAt: base.reminderResolvedAt ?? null,
                     template: base.template ?? null,
                     expense: base.expense ?? null,
                 };
@@ -533,7 +603,7 @@ const confirmPlannedExpensesBatch = async (req, res) => {
                 if (existingExpense?.id) {
                     await tx.plannedExpense.update({
                         where: { id },
-                        data: { isConfirmed: true },
+                        data: { isConfirmed: true, reminderResolvedAt: new Date() },
                     });
                     return { id, expenseId: existingExpense.id, alreadyConfirmed: true };
                 }
@@ -556,7 +626,7 @@ const confirmPlannedExpensesBatch = async (req, res) => {
                 });
                 await tx.plannedExpense.update({
                     where: { id },
-                    data: { isConfirmed: true },
+                    data: { isConfirmed: true, reminderResolvedAt: new Date() },
                 });
                 return { id, expenseId: exp.id };
             });

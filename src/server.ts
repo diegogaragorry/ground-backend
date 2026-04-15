@@ -12,6 +12,7 @@ dns.setDefaultResultOrder("ipv4first");
 import app from "./app";
 import { startBillingScheduler } from "./billing/scheduler";
 import { prisma } from "./lib/prisma";
+import { startExpenseReminderScheduler } from "./reminders/scheduler";
 
 const PORT = Number(process.env.PORT) || 3000;
 
@@ -27,6 +28,7 @@ async function ensureRuntimeSchema() {
 async function start() {
   await ensureRuntimeSchema();
   startBillingScheduler();
+  startExpenseReminderScheduler();
 
   // Sin host para enlazar todas las interfaces (IPv4 + IPv6); Railway puede conectar por IPv6.
   app.listen(PORT, () => {

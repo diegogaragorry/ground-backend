@@ -13,6 +13,7 @@ dns_1.default.setDefaultResultOrder("ipv4first");
 const app_1 = __importDefault(require("./app"));
 const scheduler_1 = require("./billing/scheduler");
 const prisma_1 = require("./lib/prisma");
+const scheduler_2 = require("./reminders/scheduler");
 const PORT = Number(process.env.PORT) || 3000;
 async function ensureRuntimeSchema() {
     // Compatibilidad de despliegue: si Railway levantó el código antes de correr Prisma migrate,
@@ -25,6 +26,7 @@ async function ensureRuntimeSchema() {
 async function start() {
     await ensureRuntimeSchema();
     (0, scheduler_1.startBillingScheduler)();
+    (0, scheduler_2.startExpenseReminderScheduler)();
     // Sin host para enlazar todas las interfaces (IPv4 + IPv6); Railway puede conectar por IPv6.
     app_1.default.listen(PORT, () => {
         console.log(`Server running on port ${PORT}`);

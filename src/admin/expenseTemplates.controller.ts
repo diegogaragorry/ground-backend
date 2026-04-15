@@ -5,6 +5,13 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 import type { AuthRequest } from "../middlewares/requireAuth";
 import { toUsd } from "../utils/fx";
+import {
+  materializeReminderForMonth,
+  parseDueDayOfMonth,
+  parseReminderChannel,
+  parseRemindDaysBefore,
+  type ReminderChannel,
+} from "../reminders/reminderUtils";
 
 const ENCRYPTED_PLACEHOLDER_PREFIX = "(encrypted-";
 const ENCRYPTED_PLACEHOLDER_SUFFIX = ")";
@@ -16,6 +23,26 @@ function parseAmountUsd(v: any) {
   if (v == null || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+function parseTemplateReminderConfig(body: any): {
+  reminderChannel: ReminderChannel;
+  dueDayOfMonth: number | null;
+  remindDaysBefore: number;
+} {
+  const reminderChannel = parseReminderChannel(body?.reminderChannel) ?? "NONE";
+  const dueDayOfMonth = parseDueDayOfMonth(body?.dueDayOfMonth);
+  const remindDaysBefore = parseRemindDaysBefore(body?.remindDaysBefore, 0);
+
+  if (reminderChannel !== "NONE" && dueDayOfMonth == null) {
+    throw new Error("dueDayOfMonth is required when reminderChannel is EMAIL or SMS");
+  }
+
+  return {
+    reminderChannel,
+    dueDayOfMonth: reminderChannel === "NONE" ? null : dueDayOfMonth,
+    remindDaysBefore,
+  };
 }
 
 export function serverYear() {
@@ -43,7 +70,17 @@ function clampStartMonth(v: unknown) {
 export async function ensurePlannedForTemplate(
   userId: string,
   year: number,
-  template: { id: string; expenseType: any; categoryId: string; description: string; defaultAmountUsd: number | null; encryptedPayload?: string | null },
+  template: {
+    id: string;
+    expenseType: any;
+    categoryId: string;
+    description: string;
+    defaultAmountUsd: number | null;
+    encryptedPayload?: string | null;
+    reminderChannel?: ReminderChannel;
+    dueDayOfMonth?: number | null;
+    remindDaysBefore?: number | null;
+  },
   startMonth = 1
 ) {
   const fromMonth = clampStartMonth(startMonth);
@@ -71,6 +108,13 @@ export async function ensurePlannedForTemplate(
           description: template.description,
           amountUsd: template.defaultAmountUsd,
           isConfirmed: false,
+          ...materializeReminderForMonth({
+            year,
+            month: m,
+            reminderChannel: template.reminderChannel ?? "NONE",
+            dueDayOfMonth: template.dueDayOfMonth ?? null,
+            remindDaysBefore: Number(template.remindDaysBefore ?? 0),
+          }),
           ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
         },
       })
@@ -81,7 +125,17 @@ export async function ensurePlannedForTemplate(
 async function syncPlannedAfterTemplateUpdate(
   userId: string,
   year: number,
-  template: { id: string; expenseType: any; categoryId: string; description: string; defaultAmountUsd: number | null; encryptedPayload?: string | null },
+  template: {
+    id: string;
+    expenseType: any;
+    categoryId: string;
+    description: string;
+    defaultAmountUsd: number | null;
+    encryptedPayload?: string | null;
+    reminderChannel?: ReminderChannel;
+    dueDayOfMonth?: number | null;
+    remindDaysBefore?: number | null;
+  },
   startMonth = 1
 ) {
   const fromMonth = clampStartMonth(startMonth);
@@ -107,6 +161,26 @@ async function syncPlannedAfterTemplateUpdate(
       ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
     },
   });
+
+  for (const month of monthsOpen) {
+    await prisma.plannedExpense.updateMany({
+      where: {
+        userId,
+        year,
+        month,
+        templateId: template.id,
+        isConfirmed: false,
+        reminderOverridden: false,
+      },
+      data: materializeReminderForMonth({
+        year,
+        month,
+        reminderChannel: template.reminderChannel ?? "NONE",
+        dueDayOfMonth: template.dueDayOfMonth ?? null,
+        remindDaysBefore: Number(template.remindDaysBefore ?? 0),
+      }),
+    });
+  }
 }
 
 type TemplateSyncShape = {
@@ -116,6 +190,9 @@ type TemplateSyncShape = {
   description: string;
   defaultAmountUsd: number | null;
   encryptedPayload?: string | null;
+  reminderChannel?: ReminderChannel;
+  dueDayOfMonth?: number | null;
+  remindDaysBefore?: number | null;
 };
 
 async function syncPlannedForTemplatesBatch(
@@ -152,6 +229,13 @@ async function syncPlannedForTemplatesBatch(
         description: template.description,
         amountUsd: template.defaultAmountUsd ?? null,
         isConfirmed: false,
+        ...materializeReminderForMonth({
+          year,
+          month,
+          reminderChannel: template.reminderChannel ?? "NONE",
+          dueDayOfMonth: template.dueDayOfMonth ?? null,
+          remindDaysBefore: Number(template.remindDaysBefore ?? 0),
+        }),
         ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
       });
     }
@@ -179,6 +263,26 @@ async function syncPlannedForTemplatesBatch(
         ...(template.encryptedPayload ? { encryptedPayload: template.encryptedPayload } : {}),
       },
     });
+
+    for (const month of monthsOpen) {
+      await tx.plannedExpense.updateMany({
+        where: {
+          userId,
+          year,
+          month,
+          templateId: template.id,
+          isConfirmed: false,
+          reminderOverridden: false,
+        },
+        data: materializeReminderForMonth({
+          year,
+          month,
+          reminderChannel: template.reminderChannel ?? "NONE",
+          dueDayOfMonth: template.dueDayOfMonth ?? null,
+          remindDaysBefore: Number(template.remindDaysBefore ?? 0),
+        }),
+      });
+    }
   }
 }
 
@@ -226,6 +330,11 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
   const categoryId = String(req.body?.categoryId ?? "");
   const encryptedPayload = typeof req.body?.encryptedPayload === "string" && req.body.encryptedPayload.length > 0 ? req.body.encryptedPayload : null;
   const hasEncrypted = !!encryptedPayload;
+  let reminderConfig: { reminderChannel: ReminderChannel; dueDayOfMonth: number | null; remindDaysBefore: number } = {
+    reminderChannel: "NONE",
+    dueDayOfMonth: null,
+    remindDaysBefore: 0,
+  };
 
   let description: string;
   let defaultAmountUsd: number | null;
@@ -233,8 +342,13 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
 
   if (hasEncrypted) {
     description = encryptedPlaceholder();
-    defaultAmountUsd = 0;
-    defaultCurrencyId = String(req.body?.defaultCurrencyId ?? "USD").toUpperCase() || "USD";
+    try {
+      const parsed = parseTemplateAmount(req.body);
+      defaultAmountUsd = parsed.defaultAmountUsd;
+      defaultCurrencyId = parsed.defaultCurrencyId;
+    } catch (e: any) {
+      return res.status(400).json({ error: e?.message ?? "Invalid amount/currency" });
+    }
   } else {
     description = String(req.body?.description ?? "").trim();
     if (!description) return res.status(400).json({ error: "description is required" });
@@ -242,8 +356,17 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
       const parsed = parseTemplateAmount(req.body);
       defaultAmountUsd = parsed.defaultAmountUsd;
       defaultCurrencyId = parsed.defaultCurrencyId;
+      reminderConfig = parseTemplateReminderConfig(req.body);
     } catch (e: any) {
       return res.status(400).json({ error: e?.message ?? "Invalid amount/currency" });
+    }
+  }
+
+  if (hasEncrypted) {
+    try {
+      reminderConfig = parseTemplateReminderConfig(req.body);
+    } catch (e: any) {
+      return res.status(400).json({ error: e?.message ?? "Invalid reminder config" });
     }
   }
 
@@ -268,6 +391,9 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
         description,
         defaultAmountUsd,
         defaultCurrencyId: defaultCurrencyId || "USD",
+        reminderChannel: reminderConfig!.reminderChannel,
+        dueDayOfMonth: reminderConfig!.dueDayOfMonth,
+        remindDaysBefore: reminderConfig!.remindDaysBefore,
         ...(hasEncrypted ? { encryptedPayload } : {}),
       },
       include: { category: true },
@@ -281,6 +407,9 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
       description: created.description,
       defaultAmountUsd: created.defaultAmountUsd ?? null,
       encryptedPayload: created.encryptedPayload ?? undefined,
+      reminderChannel: created.reminderChannel,
+      dueDayOfMonth: created.dueDayOfMonth,
+      remindDaysBefore: created.remindDaysBefore,
     }, startMonth);
 
     res.status(201).json(created);
@@ -300,13 +429,19 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
           description: existing.description,
           defaultAmountUsd: defaultAmountUsd ?? existing.defaultAmountUsd ?? null,
           encryptedPayload: existing.encryptedPayload ?? undefined,
+          reminderChannel: reminderConfig!.reminderChannel,
+          dueDayOfMonth: reminderConfig!.dueDayOfMonth,
+          remindDaysBefore: reminderConfig!.remindDaysBefore,
         };
-        if (defaultAmountUsd !== undefined && defaultAmountUsd !== null || defaultCurrencyId) {
+        if (defaultAmountUsd !== undefined && defaultAmountUsd !== null || defaultCurrencyId || reminderConfig) {
           await prisma.expenseTemplate.update({
             where: { id: existing.id },
             data: {
               ...(defaultAmountUsd !== undefined && defaultAmountUsd !== null ? { defaultAmountUsd } : {}),
               ...(defaultCurrencyId ? { defaultCurrencyId } : {}),
+              reminderChannel: reminderConfig!.reminderChannel,
+              dueDayOfMonth: reminderConfig!.dueDayOfMonth,
+              remindDaysBefore: reminderConfig!.remindDaysBefore,
             },
           });
         }
@@ -324,7 +459,7 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
 };
 
 // POST /admin/expenseTemplates/batch
-// Body: { startMonth?: number, templates: Array<{ categoryId, description, defaultAmountUsd, defaultCurrencyId?, showInExpenses? }> }
+// Body: { startMonth?: number, templates: Array<{ categoryId, description, onboardingSourceKey?, defaultAmountUsd, defaultCurrencyId?, showInExpenses? }> }
 export const upsertExpenseTemplatesBatch = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
   const rawTemplates = req.body?.templates;
@@ -335,14 +470,19 @@ export const upsertExpenseTemplatesBatch = async (req: AuthRequest, res: Respons
   const normalizedMap = new Map<string, {
     categoryId: string;
     description: string;
+    onboardingSourceKey: string | null;
     defaultAmountUsd: number | null;
     defaultCurrencyId: string;
     showInExpenses: boolean;
+    reminderChannel: ReminderChannel;
+    dueDayOfMonth: number | null;
+    remindDaysBefore: number;
   }>();
 
   for (const raw of rawTemplates) {
     const categoryId = String(raw?.categoryId ?? "").trim();
     const description = String(raw?.description ?? "").trim();
+    const onboardingSourceKey = String(raw?.onboardingSourceKey ?? "").trim() || null;
     if (!categoryId || !description) {
       return res.status(400).json({ error: "categoryId and description are required for each template" });
     }
@@ -351,12 +491,22 @@ export const upsertExpenseTemplatesBatch = async (req: AuthRequest, res: Respons
     if (defaultCurrencyId !== "USD" && defaultCurrencyId !== "UYU") {
       return res.status(400).json({ error: "defaultCurrencyId must be USD or UYU" });
     }
-    normalizedMap.set(`${categoryId}::${description}`, {
+    let reminderConfig: { reminderChannel: ReminderChannel; dueDayOfMonth: number | null; remindDaysBefore: number };
+    try {
+      reminderConfig = parseTemplateReminderConfig(raw);
+    } catch (e: any) {
+      return res.status(400).json({ error: e?.message ?? "Invalid reminder config" });
+    }
+    normalizedMap.set(onboardingSourceKey || `${categoryId}::${description}`, {
       categoryId,
       description,
+      onboardingSourceKey,
       defaultAmountUsd,
       defaultCurrencyId,
       showInExpenses: raw?.showInExpenses !== false,
+      reminderChannel: reminderConfig.reminderChannel,
+      dueDayOfMonth: reminderConfig.dueDayOfMonth,
+      remindDaysBefore: reminderConfig.remindDaysBefore,
     });
   }
 
@@ -372,7 +522,13 @@ export const upsertExpenseTemplatesBatch = async (req: AuthRequest, res: Respons
       select: { id: true, expenseType: true },
     }),
     prisma.expenseTemplate.findMany({
-      where: { userId, categoryId: { in: categoryIds } },
+      where: {
+        userId,
+        OR: [
+          { categoryId: { in: categoryIds } },
+          { onboardingSourceKey: { in: normalized.map((t) => t.onboardingSourceKey).filter(Boolean) as string[] } },
+        ],
+      },
       include: { category: true },
     }),
   ]);
@@ -383,6 +539,11 @@ export const upsertExpenseTemplatesBatch = async (req: AuthRequest, res: Respons
 
   const categoryMap = new Map(cats.map((c) => [c.id, c]));
   const existingMap = new Map(existingTemplates.map((t) => [`${t.categoryId}::${t.description}`, t]));
+  const existingBySourceKey = new Map(
+    existingTemplates
+      .filter((t) => t.onboardingSourceKey)
+      .map((t) => [t.onboardingSourceKey as string, t])
+  );
 
   try {
     const rows = await prisma.$transaction(async (tx) => {
@@ -390,19 +551,29 @@ export const upsertExpenseTemplatesBatch = async (req: AuthRequest, res: Respons
 
       for (const template of normalized) {
         const cat = categoryMap.get(template.categoryId)!;
-        const existing = existingMap.get(`${template.categoryId}::${template.description}`);
+        const existing =
+          (template.onboardingSourceKey ? existingBySourceKey.get(template.onboardingSourceKey) : null) ??
+          existingMap.get(`${template.categoryId}::${template.description}`);
         if (existing) {
           const updated = await tx.expenseTemplate.update({
             where: { id: existing.id },
             data: {
+              categoryId: template.categoryId,
+              expenseType: cat.expenseType,
+              description: template.description,
+              onboardingSourceKey: template.onboardingSourceKey,
               defaultAmountUsd: template.defaultAmountUsd,
               defaultCurrencyId: template.defaultCurrencyId,
               showInExpenses: template.showInExpenses,
+              reminderChannel: template.reminderChannel,
+              dueDayOfMonth: template.dueDayOfMonth,
+              remindDaysBefore: template.remindDaysBefore,
             },
             include: { category: true },
           });
           touched.push(updated);
           existingMap.set(`${template.categoryId}::${template.description}`, updated as any);
+          if (template.onboardingSourceKey) existingBySourceKey.set(template.onboardingSourceKey, updated as any);
           continue;
         }
 
@@ -411,15 +582,20 @@ export const upsertExpenseTemplatesBatch = async (req: AuthRequest, res: Respons
             userId,
             expenseType: cat.expenseType,
             categoryId: template.categoryId,
+            onboardingSourceKey: template.onboardingSourceKey,
             description: template.description,
             defaultAmountUsd: template.defaultAmountUsd,
             defaultCurrencyId: template.defaultCurrencyId,
             showInExpenses: template.showInExpenses,
+            reminderChannel: template.reminderChannel,
+            dueDayOfMonth: template.dueDayOfMonth,
+            remindDaysBefore: template.remindDaysBefore,
           },
           include: { category: true },
         });
         touched.push(created);
         existingMap.set(`${template.categoryId}::${template.description}`, created as any);
+        if (template.onboardingSourceKey) existingBySourceKey.set(template.onboardingSourceKey, created as any);
       }
 
       await syncPlannedForTemplatesBatch(
@@ -435,6 +611,9 @@ export const upsertExpenseTemplatesBatch = async (req: AuthRequest, res: Respons
             description: template.description,
             defaultAmountUsd: template.defaultAmountUsd ?? null,
             encryptedPayload: template.encryptedPayload ?? undefined,
+            reminderChannel: template.reminderChannel,
+            dueDayOfMonth: template.dueDayOfMonth,
+            remindDaysBefore: template.remindDaysBefore,
           })),
         monthsOpen
       );
@@ -461,7 +640,16 @@ export const updateExpenseTemplate = async (req: AuthRequest, res: Response) => 
 
   const existing = await prisma.expenseTemplate.findFirst({
     where: { id, userId },
-    select: { id: true, categoryId: true, expenseType: true, defaultCurrencyId: true, defaultAmountUsd: true },
+    select: {
+      id: true,
+      categoryId: true,
+      expenseType: true,
+      defaultCurrencyId: true,
+      defaultAmountUsd: true,
+      reminderChannel: true,
+      dueDayOfMonth: true,
+      remindDaysBefore: true,
+    },
   });
   if (!existing) return res.status(404).json({ error: "Template not found" });
 
@@ -498,32 +686,51 @@ export const updateExpenseTemplate = async (req: AuthRequest, res: Response) => 
       if (!d) return res.status(400).json({ error: "description is required" });
       patch.description = d;
     }
+  }
 
-    // defaultAmountUsd / defaultCurrencyId
-    if (
-      req.body?.defaultAmountUsd !== undefined ||
-      req.body?.defaultAmount !== undefined ||
-      (req.body?.defaultCurrencyId !== undefined && req.body?.defaultAmount !== undefined)
-    ) {
-      try {
-        const parsed = parseTemplateAmount({
-          defaultAmountUsd: req.body?.defaultAmountUsd,
-          defaultAmount: req.body?.defaultAmount,
-          defaultCurrencyId: req.body?.defaultCurrencyId ?? (existing as any).defaultCurrencyId ?? "USD",
-          usdUyuRate: req.body?.usdUyuRate,
-        });
-        patch.defaultAmountUsd = parsed.defaultAmountUsd;
-        patch.defaultCurrencyId = parsed.defaultCurrencyId;
-      } catch (e: any) {
-        return res.status(400).json({ error: e?.message ?? "Invalid amount/currency" });
-      }
-    } else if (req.body?.defaultCurrencyId !== undefined) {
-      patch.defaultCurrencyId = String(req.body.defaultCurrencyId || "USD").toUpperCase();
+  // defaultAmountUsd / defaultCurrencyId
+  if (
+    req.body?.defaultAmountUsd !== undefined ||
+    req.body?.defaultAmount !== undefined ||
+    (req.body?.defaultCurrencyId !== undefined && req.body?.defaultAmount !== undefined)
+  ) {
+    try {
+      const parsed = parseTemplateAmount({
+        defaultAmountUsd: req.body?.defaultAmountUsd,
+        defaultAmount: req.body?.defaultAmount,
+        defaultCurrencyId: req.body?.defaultCurrencyId ?? (existing as any).defaultCurrencyId ?? "USD",
+        usdUyuRate: req.body?.usdUyuRate,
+      });
+      patch.defaultAmountUsd = parsed.defaultAmountUsd;
+      patch.defaultCurrencyId = parsed.defaultCurrencyId;
+    } catch (e: any) {
+      return res.status(400).json({ error: e?.message ?? "Invalid amount/currency" });
     }
+  } else if (req.body?.defaultCurrencyId !== undefined) {
+    patch.defaultCurrencyId = String(req.body.defaultCurrencyId || "USD").toUpperCase();
   }
 
   if (req.body?.showInExpenses !== undefined) {
     patch.showInExpenses = Boolean(req.body.showInExpenses);
+  }
+
+  if (
+    req.body?.reminderChannel !== undefined ||
+    req.body?.dueDayOfMonth !== undefined ||
+    req.body?.remindDaysBefore !== undefined
+  ) {
+    try {
+      const reminderConfig = parseTemplateReminderConfig({
+        reminderChannel: req.body?.reminderChannel ?? existing.reminderChannel,
+        dueDayOfMonth: req.body?.dueDayOfMonth ?? existing.dueDayOfMonth,
+        remindDaysBefore: req.body?.remindDaysBefore ?? existing.remindDaysBefore,
+      });
+      patch.reminderChannel = reminderConfig.reminderChannel;
+      patch.dueDayOfMonth = reminderConfig.dueDayOfMonth;
+      patch.remindDaysBefore = reminderConfig.remindDaysBefore;
+    } catch (e: any) {
+      return res.status(400).json({ error: e?.message ?? "Invalid reminder config" });
+    }
   }
 
   const year = serverYear();
@@ -544,6 +751,9 @@ export const updateExpenseTemplate = async (req: AuthRequest, res: Response) => 
       description: updated.description,
       defaultAmountUsd: updated.defaultAmountUsd ?? null,
       encryptedPayload: updated.encryptedPayload ?? undefined,
+      reminderChannel: updated.reminderChannel,
+      dueDayOfMonth: updated.dueDayOfMonth,
+      remindDaysBefore: updated.remindDaysBefore,
     });
     }
     // Si showInExpenses pasó a false, no borramos planned existentes (quedan ocultos por filtro en list)

@@ -3,6 +3,7 @@ import {
   login,
   me,
   patchMe,
+  getOnboardingContext,
   finalizeOnboarding,
   registerRequestCode,
   registerVerify,
@@ -34,6 +35,7 @@ router.post("/forgot-password/verify", forgotPasswordVerify);
 router.post("/login", login);
 router.get("/me", requireAuth, me);
 router.patch("/me", requireAuth, patchMe);
+router.get("/me/onboarding/context", requireAuth, getOnboardingContext);
 router.post("/me/onboarding/finalize", requireAuth, requireBillingWriteAccess, finalizeOnboarding);
 
 // Phone (for E2EE recovery)

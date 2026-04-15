@@ -41,6 +41,12 @@ enum BillingSubscriptionStatus {
   INCOMPLETE
 }
 
+enum ReminderChannel {
+  NONE
+  EMAIL
+  SMS
+}
+
 model User {
   id                         String   @id @default(uuid())
   email                      String   @unique
@@ -73,9 +79,9 @@ model User {
   monthCloses  MonthClose[]
   loginLogs    LoginLog[]
 
-  expenseTemplates ExpenseTemplate[]
-  plannedExpenses  PlannedExpense[]
-  monthlyBudgets   MonthlyBudget[]
+  expenseTemplates    ExpenseTemplate[]
+  plannedExpenses     PlannedExpense[]
+  monthlyBudgets      MonthlyBudget[]
   merchantMappingRules MerchantMappingRule[]
 
   phoneVerificationCodes PhoneVerificationCode[]
@@ -252,10 +258,11 @@ model Budget {
 }
 
 model Investment {
-  id        String   @id @default(uuid())
-  name      String
-  type      String
-  createdAt DateTime @default(now())
+  id                 String   @id @default(uuid())
+  name               String
+  type               String
+  onboardingSourceKey String?
+  createdAt          DateTime @default(now())
 
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -269,20 +276,27 @@ model Investment {
 
   movements InvestmentMovement[]
   snapshots InvestmentSnapshot[]
+
+  @@unique([userId, onboardingSourceKey])
+  @@index([userId, onboardingSourceKey])
 }
 
 model InvestmentMovement {
-  id           String   @id @default(uuid())
-  investmentId String
-  date         DateTime
-  amount       Float
-  type         String
-  currencyId   String
+  id                  String   @id @default(uuid())
+  investmentId        String
+  onboardingSourceKey String?
+  date                DateTime
+  amount              Float
+  type                String
+  currencyId          String
 
   encryptedPayload String? @db.Text // E2EE: client encrypts amount
 
   investment Investment @relation(fields: [investmentId], references: [id], onDelete: Cascade)
   currency   Currency   @relation(fields: [currencyId], references: [id])
+
+  @@unique([investmentId, onboardingSourceKey])
+  @@index([investmentId, onboardingSourceKey])
 }
 
 model InvestmentSnapshot {
@@ -401,6 +415,7 @@ model ExpenseTemplate {
   userId            String
   expenseType       ExpenseType
   categoryId        String
+  onboardingSourceKey String?
   description       String
   defaultAmountUsd  Float?
   defaultCurrencyId String?     @default("USD") // moneda en que el usuario ingresa el monto (UYU | USD)
@@ -416,13 +431,19 @@ model ExpenseTemplate {
   // Si true, la plantilla genera borradores en Gastos; si false, solo se lista en Admin (card "no visibles")
   showInExpenses Boolean @default(true)
 
+  reminderChannel ReminderChannel @default(NONE)
+  dueDayOfMonth   Int?
+  remindDaysBefore Int @default(0)
+
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   category Category @relation(fields: [categoryId], references: [id], onDelete: Cascade)
 
   planned PlannedExpense[]
 
   @@unique([userId, expenseType, categoryId, description])
+  @@unique([userId, onboardingSourceKey])
   @@index([userId])
+  @@index([userId, onboardingSourceKey])
 }
 
 model PlannedExpense {
@@ -443,6 +464,15 @@ model PlannedExpense {
   usdUyuRate  Float? // FX rate when amount was set
   isConfirmed Boolean @default(false)
 
+  reminderChannel    ReminderChannel @default(NONE)
+  dueDate            DateTime?
+  remindAt           DateTime?
+  remindDaysBefore   Int             @default(0)
+  reminderOverridden Boolean         @default(false)
+  emailReminderSentAt DateTime?
+  smsReminderSentAt   DateTime?
+  reminderResolvedAt  DateTime?
+
   // E2EE: client encrypts amountUsd, amount, description; server stores blob and 0/placeholder
   encryptedPayload String? @db.Text
 
@@ -457,6 +487,8 @@ model PlannedExpense {
 
   @@unique([userId, year, month, templateId])
   @@index([userId, year, month])
+  @@index([remindAt])
+  @@index([userId, remindAt])
 }
 
 model MonthlyBudget {

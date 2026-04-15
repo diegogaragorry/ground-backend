@@ -6,9 +6,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.sendSignupCodeEmail = sendSignupCodeEmail;
 exports.sendPasswordResetCodeEmail = sendPasswordResetCodeEmail;
 exports.sendSpecialGuestCampaignEmail = sendSpecialGuestCampaignEmail;
+exports.sendExpenseReminderEmail = sendExpenseReminderEmail;
 const nodemailer_1 = __importDefault(require("nodemailer"));
 const authMessages_1 = require("./authMessages");
 const campaignMessages_1 = require("./campaignMessages");
+const reminderMessages_1 = require("./reminderMessages");
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const EMAIL_FROM = process.env.EMAIL_FROM || "";
 const SMTP_HOST = process.env.SMTP_HOST;
@@ -109,5 +111,12 @@ async function sendSpecialGuestCampaignEmail(to, language) {
     if (!recipient)
         throw new Error("Missing recipient email (to)");
     const { subject, text, html } = (0, campaignMessages_1.buildSpecialGuestCampaignEmail)(language);
+    await sendEmailTemplate(recipient, subject, html, text);
+}
+async function sendExpenseReminderEmail(to, input, language) {
+    const recipient = String(to || "").trim();
+    if (!recipient)
+        throw new Error("Missing recipient email (to)");
+    const { subject, text, html } = (0, reminderMessages_1.buildExpenseReminderEmail)(input, language);
     await sendEmailTemplate(recipient, subject, html, text);
 }

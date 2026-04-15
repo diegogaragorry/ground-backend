@@ -16,6 +16,7 @@ router.post("/forgot-password/verify", auth_controller_1.forgotPasswordVerify);
 router.post("/login", auth_controller_1.login);
 router.get("/me", requireAuth_1.requireAuth, auth_controller_1.me);
 router.patch("/me", requireAuth_1.requireAuth, auth_controller_1.patchMe);
+router.get("/me/onboarding/context", requireAuth_1.requireAuth, auth_controller_1.getOnboardingContext);
 router.post("/me/onboarding/finalize", requireAuth_1.requireAuth, requireBillingWriteAccess_1.requireBillingWriteAccess, auth_controller_1.finalizeOnboarding);
 // Phone (for E2EE recovery)
 router.post("/me/phone/request", requireAuth_1.requireAuth, auth_controller_1.phoneRequest);
