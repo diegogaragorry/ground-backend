@@ -126,8 +126,10 @@ export async function sendExpenseReminderEmail(
   to: string,
   input: {
     count: number;
-    earliestDueDate: Date | null;
-    nextDueLabels: string[];
+    triggeredDueDate: Date | null;
+    triggeredLabels: string[];
+    earliestOutstandingDueDate: Date | null;
+    earliestOutstandingLabels: string[];
     monthlySchedule: Array<{ dueDate: Date; labels: string[] }>;
   },
   language?: PreferredLanguage | string | null

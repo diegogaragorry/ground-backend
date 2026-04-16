@@ -60,6 +60,25 @@ function earliestDueDate(rows: ReminderRow[]) {
   return dates.sort((a, b) => a.getTime() - b.getTime())[0];
 }
 
+function labelsForDueDate(
+  schedule: Array<{ dueDate: Date; labels: string[] }>,
+  targetDate: Date | null,
+  fallbackRows: ReminderRow[]
+) {
+  if (!(targetDate instanceof Date)) return [];
+  const key = targetDate.toISOString().slice(0, 10);
+  const fromSchedule = schedule.find((item) => item.dueDate.toISOString().slice(0, 10) === key)?.labels ?? [];
+  if (fromSchedule.length > 0) return fromSchedule;
+  return [
+    ...new Set(
+      fallbackRows
+        .filter((row) => row.dueDate instanceof Date && row.dueDate.toISOString().slice(0, 10) === key)
+        .map((row) => resolveReminderLabel(row))
+        .filter((value): value is string => Boolean(value))
+    ),
+  ];
+}
+
 function monthBounds(referenceDate: Date) {
   const year = referenceDate.getUTCFullYear();
   const month = referenceDate.getUTCMonth();
@@ -107,10 +126,12 @@ async function loadMonthlySchedule(
 
   return {
     count: rows.length,
-    schedule: [...grouped.values()].map((item) => ({
-      dueDate: item.dueDate,
-      labels: [...new Set(item.labels)],
-    })),
+    schedule: [...grouped.values()]
+      .map((item) => ({
+        dueDate: item.dueDate,
+        labels: [...new Set(item.labels)],
+      }))
+      .sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime()),
   };
 }
 
@@ -162,22 +183,18 @@ export async function runDueExpenseReminders(limit = 100) {
   for (const group of groups) {
     const first = group.rows[0];
     const language = resolvePreferredLanguage(first.user.preferredLanguage);
-    const referenceDate = earliestDueDate(group.rows) ?? now;
-    const monthlyOverview = await loadMonthlySchedule(group.userId, group.channel, referenceDate);
+    const triggeredDueDate = earliestDueDate(group.rows) ?? now;
+    const monthlyOverview = await loadMonthlySchedule(group.userId, group.channel, triggeredDueDate);
     const monthlySchedule = monthlyOverview.schedule;
-    const nextDueKey = referenceDate.toISOString().slice(0, 10);
-    const nextDueLabels =
-      monthlySchedule.find((item) => item.dueDate.toISOString().slice(0, 10) === nextDueKey)?.labels ??
-      [...new Set(
-        group.rows
-          .filter((row) => row.dueDate instanceof Date && row.dueDate.toISOString().slice(0, 10) === nextDueKey)
-          .map((row) => resolveReminderLabel(row))
-          .filter((value): value is string => Boolean(value))
-      )];
+    const earliestOutstandingDueDate = monthlySchedule[0]?.dueDate ?? triggeredDueDate;
+    const triggeredLabels = labelsForDueDate(monthlySchedule, triggeredDueDate, group.rows);
+    const earliestOutstandingLabels = labelsForDueDate(monthlySchedule, earliestOutstandingDueDate, group.rows);
     const summary = {
       count: Math.max(monthlyOverview.count, group.rows.length),
-      earliestDueDate: referenceDate,
-      nextDueLabels,
+      triggeredDueDate,
+      triggeredLabels,
+      earliestOutstandingDueDate,
+      earliestOutstandingLabels,
       monthlySchedule,
     };
 

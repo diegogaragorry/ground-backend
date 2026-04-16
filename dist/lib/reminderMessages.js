@@ -29,14 +29,43 @@ function escapeHtml(value) {
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#39;");
 }
+function sameUtcDay(a, b) {
+    if (!(a instanceof Date) || !(b instanceof Date))
+        return false;
+    return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
+}
+function earlierPendingSchedule(input) {
+    if (!(input.triggeredDueDate instanceof Date))
+        return [];
+    return input.monthlySchedule.filter((item) => item.dueDate.getTime() < input.triggeredDueDate.getTime());
+}
+function summarizeDueDates(items, language, maxVisible) {
+    const visible = items.slice(0, maxVisible).map((item) => formatDate(item.dueDate, language));
+    const hidden = items.length - visible.length;
+    if (hidden <= 0)
+        return visible.join(", ");
+    return language === "es"
+        ? `${visible.join(", ")} y ${hidden} más`
+        : `${visible.join(", ")} and ${hidden} more`;
+}
 function buildExpenseReminderEmail(input, language) {
     const resolved = (0, preferredLanguage_1.resolvePreferredLanguage)(language);
-    const dueLabel = formatDate(input.earliestDueDate, resolved);
+    const triggeredDueLabel = formatDate(input.triggeredDueDate, resolved);
+    const outstandingDueLabel = formatDate(input.earliestOutstandingDueDate, resolved);
     const isSingle = input.count === 1;
-    const nextDueSummary = summarizeLabels(input.nextDueLabels, resolved, 3);
+    const triggeredSummary = summarizeLabels(input.triggeredLabels, resolved, 3);
+    const earliestOutstandingSummary = summarizeLabels(input.earliestOutstandingLabels, resolved, 3);
+    const earlierPending = earlierPendingSchedule(input);
+    const hasEarlierPending = earlierPending.length > 0 && !sameUtcDay(input.triggeredDueDate, input.earliestOutstandingDueDate);
     const scheduleLines = input.monthlySchedule
         .filter((item) => item.labels.length > 0)
         .sort((a, b) => a.dueDate.getTime() - b.dueDate.getTime())
+        .map((item) => ({
+        date: formatDate(item.dueDate, resolved),
+        labels: summarizeLabels(item.labels, resolved, 6),
+    }));
+    const earlierPendingLines = earlierPending
+        .filter((item) => item.labels.length > 0)
         .map((item) => ({
         date: formatDate(item.dueDate, resolved),
         labels: summarizeLabels(item.labels, resolved, 6),
@@ -47,7 +76,20 @@ function buildExpenseReminderEmail(input, language) {
             isSingle
                 ? `Tenés 1 pago recurrente para revisar en Ground.`
                 : `Tenés ${input.count} pagos recurrentes para revisar en Ground.`,
-            nextDueSummary ? `Próximo vencimiento ${dueLabel}: ${nextDueSummary}.` : `El próximo vence el ${dueLabel}.`,
+            hasEarlierPending
+                ? (triggeredSummary
+                    ? `Este recordatorio corresponde al vencimiento ${triggeredDueLabel}: ${triggeredSummary}.`
+                    : `Este recordatorio corresponde al vencimiento ${triggeredDueLabel}.`)
+                : (earliestOutstandingSummary
+                    ? `Próximo vencimiento ${outstandingDueLabel}: ${earliestOutstandingSummary}.`
+                    : `El próximo vence el ${outstandingDueLabel}.`),
+            ...(hasEarlierPending
+                ? [
+                    earlierPendingLines.length > 0
+                        ? `Además, seguís teniendo pendientes anteriores ya recordados: ${earlierPendingLines.map((item) => `${item.date}: ${item.labels}`).join("; ")}.`
+                        : `Además, seguís teniendo pendientes anteriores desde ${summarizeDueDates(earlierPending, resolved, 3)}.`,
+                ]
+                : []),
             ...(scheduleLines.length > 0
                 ? ["", "Vencimientos de este mes:", ...scheduleLines.map((item) => `- ${item.date}: ${item.labels}`)]
                 : []),
@@ -63,10 +105,23 @@ function buildExpenseReminderEmail(input, language) {
           para revisar en Ground.
         </p>
         <p style="margin: 0 0 18px;">
-          ${nextDueSummary
-            ? `Próximo vencimiento <strong>${escapeHtml(dueLabel)}</strong>: <strong>${escapeHtml(nextDueSummary)}</strong>.`
-            : `El próximo vence el <strong>${escapeHtml(dueLabel)}</strong>.`}
+          ${hasEarlierPending
+            ? (triggeredSummary
+                ? `Este recordatorio corresponde al vencimiento <strong>${escapeHtml(triggeredDueLabel)}</strong>: <strong>${escapeHtml(triggeredSummary)}</strong>.`
+                : `Este recordatorio corresponde al vencimiento <strong>${escapeHtml(triggeredDueLabel)}</strong>.`)
+            : (earliestOutstandingSummary
+                ? `Próximo vencimiento <strong>${escapeHtml(outstandingDueLabel)}</strong>: <strong>${escapeHtml(earliestOutstandingSummary)}</strong>.`
+                : `El próximo vence el <strong>${escapeHtml(outstandingDueLabel)}</strong>.`)}
         </p>
+        ${hasEarlierPending
+            ? `
+        <p style="margin: 0 0 18px;">
+          ${earlierPendingLines.length > 0
+                ? `Además, seguís teniendo pendientes anteriores ya recordados: <strong>${earlierPendingLines.map((item) => `${escapeHtml(item.date)}: ${escapeHtml(item.labels)}`).join("; ")}</strong>.`
+                : `Además, seguís teniendo pendientes anteriores desde <strong>${escapeHtml(summarizeDueDates(earlierPending, resolved, 3))}</strong>.`}
+        </p>
+        `
+            : ""}
         ${scheduleLines.length > 0
             ? `
         <div style="margin: 0 0 18px;">
@@ -92,7 +147,20 @@ function buildExpenseReminderEmail(input, language) {
         isSingle
             ? "You have 1 recurring payment to review in Ground."
             : `You have ${input.count} recurring payments to review in Ground.`,
-        nextDueSummary ? `Next due ${dueLabel}: ${nextDueSummary}.` : `The next one is due on ${dueLabel}.`,
+        hasEarlierPending
+            ? (triggeredSummary
+                ? `This reminder is for the due date on ${triggeredDueLabel}: ${triggeredSummary}.`
+                : `This reminder is for the due date on ${triggeredDueLabel}.`)
+            : (earliestOutstandingSummary
+                ? `Next due ${outstandingDueLabel}: ${earliestOutstandingSummary}.`
+                : `The next one is due on ${outstandingDueLabel}.`),
+        ...(hasEarlierPending
+            ? [
+                earlierPendingLines.length > 0
+                    ? `You still have earlier pending due dates already reminded: ${earlierPendingLines.map((item) => `${item.date}: ${item.labels}`).join("; ")}.`
+                    : `You still have earlier pending due dates starting on ${summarizeDueDates(earlierPending, resolved, 3)}.`,
+            ]
+            : []),
         ...(scheduleLines.length > 0
             ? ["", "This month's due dates:", ...scheduleLines.map((item) => `- ${item.date}: ${item.labels}`)]
             : []),
@@ -108,10 +176,23 @@ function buildExpenseReminderEmail(input, language) {
         to review in Ground.
       </p>
       <p style="margin: 0 0 18px;">
-        ${nextDueSummary
-        ? `Next due <strong>${escapeHtml(dueLabel)}</strong>: <strong>${escapeHtml(nextDueSummary)}</strong>.`
-        : `The next one is due on <strong>${escapeHtml(dueLabel)}</strong>.`}
+        ${hasEarlierPending
+        ? (triggeredSummary
+            ? `This reminder is for the due date on <strong>${escapeHtml(triggeredDueLabel)}</strong>: <strong>${escapeHtml(triggeredSummary)}</strong>.`
+            : `This reminder is for the due date on <strong>${escapeHtml(triggeredDueLabel)}</strong>.`)
+        : (earliestOutstandingSummary
+            ? `Next due <strong>${escapeHtml(outstandingDueLabel)}</strong>: <strong>${escapeHtml(earliestOutstandingSummary)}</strong>.`
+            : `The next one is due on <strong>${escapeHtml(outstandingDueLabel)}</strong>.`)}
       </p>
+      ${hasEarlierPending
+        ? `
+      <p style="margin: 0 0 18px;">
+        ${earlierPendingLines.length > 0
+            ? `You still have earlier pending due dates already reminded: <strong>${earlierPendingLines.map((item) => `${escapeHtml(item.date)}: ${escapeHtml(item.labels)}`).join("; ")}</strong>.`
+            : `You still have earlier pending due dates starting on <strong>${escapeHtml(summarizeDueDates(earlierPending, resolved, 3))}</strong>.`}
+      </p>
+      `
+        : ""}
       ${scheduleLines.length > 0
         ? `
       <div style="margin: 0 0 18px;">
@@ -134,24 +215,49 @@ function buildExpenseReminderEmail(input, language) {
 }
 function buildExpenseReminderSms(input, language) {
     const resolved = (0, preferredLanguage_1.resolvePreferredLanguage)(language);
-    const dueLabel = formatDate(input.earliestDueDate, resolved);
-    const nextDueSummary = summarizeLabels(input.nextDueLabels, resolved, 3);
+    const triggeredDueLabel = formatDate(input.triggeredDueDate, resolved);
+    const outstandingDueLabel = formatDate(input.earliestOutstandingDueDate, resolved);
+    const triggeredSummary = summarizeLabels(input.triggeredLabels, resolved, 3);
+    const earliestOutstandingSummary = summarizeLabels(input.earliestOutstandingLabels, resolved, 3);
+    const earlierPending = earlierPendingSchedule(input);
+    const hasEarlierPending = earlierPending.length > 0 && !sameUtcDay(input.triggeredDueDate, input.earliestOutstandingDueDate);
+    const earlierPendingDates = summarizeDueDates(earlierPending, resolved, 2);
     if (resolved === "es") {
         if (input.count === 1) {
-            return nextDueSummary
-                ? `Ground: tenés 1 pago recurrente para revisar. Próximo vencimiento ${dueLabel}: ${nextDueSummary}. Abrí Gastos: https://ground.finance/app/expenses`
-                : `Ground: tenés 1 pago recurrente para revisar. Vence ${dueLabel}. Abrí Gastos: https://ground.finance/app/expenses`;
+            if (hasEarlierPending) {
+                return triggeredSummary
+                    ? `Ground: tenés 1 pago recurrente para revisar. Este recordatorio es por ${triggeredDueLabel}: ${triggeredSummary}. Tenés pendientes anteriores del ${earlierPendingDates}. Abrí Gastos: https://ground.finance/app/expenses`
+                    : `Ground: tenés 1 pago recurrente para revisar. Este recordatorio es por ${triggeredDueLabel}. Tenés pendientes anteriores del ${earlierPendingDates}. Abrí Gastos: https://ground.finance/app/expenses`;
+            }
+            return earliestOutstandingSummary
+                ? `Ground: tenés 1 pago recurrente para revisar. Próximo vencimiento ${outstandingDueLabel}: ${earliestOutstandingSummary}. Abrí Gastos: https://ground.finance/app/expenses`
+                : `Ground: tenés 1 pago recurrente para revisar. Vence ${outstandingDueLabel}. Abrí Gastos: https://ground.finance/app/expenses`;
         }
-        return nextDueSummary
-            ? `Ground: tenés ${input.count} pagos recurrentes para revisar. Próximo vencimiento ${dueLabel}: ${nextDueSummary}. Abrí Gastos: https://ground.finance/app/expenses`
-            : `Ground: tenés ${input.count} pagos recurrentes para revisar. Próximo vencimiento ${dueLabel}. Abrí Gastos: https://ground.finance/app/expenses`;
+        if (hasEarlierPending) {
+            return triggeredSummary
+                ? `Ground: tenés ${input.count} pagos recurrentes para revisar. Este recordatorio es por ${triggeredDueLabel}: ${triggeredSummary}. Tenés pendientes anteriores del ${earlierPendingDates}. Abrí Gastos: https://ground.finance/app/expenses`
+                : `Ground: tenés ${input.count} pagos recurrentes para revisar. Este recordatorio es por ${triggeredDueLabel}. Tenés pendientes anteriores del ${earlierPendingDates}. Abrí Gastos: https://ground.finance/app/expenses`;
+        }
+        return earliestOutstandingSummary
+            ? `Ground: tenés ${input.count} pagos recurrentes para revisar. Próximo vencimiento ${outstandingDueLabel}: ${earliestOutstandingSummary}. Abrí Gastos: https://ground.finance/app/expenses`
+            : `Ground: tenés ${input.count} pagos recurrentes para revisar. Próximo vencimiento ${outstandingDueLabel}. Abrí Gastos: https://ground.finance/app/expenses`;
     }
     if (input.count === 1) {
-        return nextDueSummary
-            ? `Ground: you have 1 recurring payment to review. Next due ${dueLabel}: ${nextDueSummary}. Open Expenses: https://ground.finance/app/expenses`
-            : `Ground: you have 1 recurring payment to review. Due ${dueLabel}. Open Expenses: https://ground.finance/app/expenses`;
+        if (hasEarlierPending) {
+            return triggeredSummary
+                ? `Ground: you have 1 recurring payment to review. This reminder is for ${triggeredDueLabel}: ${triggeredSummary}. You still have earlier pending due dates from ${earlierPendingDates}. Open Expenses: https://ground.finance/app/expenses`
+                : `Ground: you have 1 recurring payment to review. This reminder is for ${triggeredDueLabel}. You still have earlier pending due dates from ${earlierPendingDates}. Open Expenses: https://ground.finance/app/expenses`;
+        }
+        return earliestOutstandingSummary
+            ? `Ground: you have 1 recurring payment to review. Next due ${outstandingDueLabel}: ${earliestOutstandingSummary}. Open Expenses: https://ground.finance/app/expenses`
+            : `Ground: you have 1 recurring payment to review. Due ${outstandingDueLabel}. Open Expenses: https://ground.finance/app/expenses`;
     }
-    return nextDueSummary
-        ? `Ground: you have ${input.count} recurring payments to review. Next due ${dueLabel}: ${nextDueSummary}. Open Expenses: https://ground.finance/app/expenses`
-        : `Ground: you have ${input.count} recurring payments to review. Next due ${dueLabel}. Open Expenses: https://ground.finance/app/expenses`;
+    if (hasEarlierPending) {
+        return triggeredSummary
+            ? `Ground: you have ${input.count} recurring payments to review. This reminder is for ${triggeredDueLabel}: ${triggeredSummary}. You still have earlier pending due dates from ${earlierPendingDates}. Open Expenses: https://ground.finance/app/expenses`
+            : `Ground: you have ${input.count} recurring payments to review. This reminder is for ${triggeredDueLabel}. You still have earlier pending due dates from ${earlierPendingDates}. Open Expenses: https://ground.finance/app/expenses`;
+    }
+    return earliestOutstandingSummary
+        ? `Ground: you have ${input.count} recurring payments to review. Next due ${outstandingDueLabel}: ${earliestOutstandingSummary}. Open Expenses: https://ground.finance/app/expenses`
+        : `Ground: you have ${input.count} recurring payments to review. Next due ${outstandingDueLabel}. Open Expenses: https://ground.finance/app/expenses`;
 }
