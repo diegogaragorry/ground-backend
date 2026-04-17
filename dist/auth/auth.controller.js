@@ -836,6 +836,7 @@ const getOnboardingContext = async (req, res) => {
                 amountUsd: true,
                 nominalUsd: true,
                 taxesUsd: true,
+                currencyId: true,
                 encryptedPayload: true,
             },
         }),
@@ -919,6 +920,7 @@ const getOnboardingContext = async (req, res) => {
                 amountUsd: incomeRow.amountUsd,
                 nominalUsd: incomeRow.nominalUsd,
                 taxesUsd: incomeRow.taxesUsd,
+                currencyId: incomeRow.currencyId,
                 encryptedPayload: incomeRow.encryptedPayload,
             }
             : null,
@@ -972,8 +974,15 @@ const finalizeOnboarding = async (req, res) => {
                     }
                     const incomeType = String(income.type ?? "liquid");
                     const taxesUsd = Number(income.taxesUsd ?? 0);
+                    const incomeCurrencyId = String(income.currencyId ?? "USD").trim().toUpperCase();
+                    const encryptedIncomePayload = typeof income.encryptedPayload === "string" && income.encryptedPayload.length > 0
+                        ? income.encryptedPayload
+                        : null;
                     if (!Number.isFinite(taxesUsd) || taxesUsd < 0) {
                         throw new Error("incomeWork.taxesUsd must be >= 0");
+                    }
+                    if (incomeCurrencyId !== "USD" && incomeCurrencyId !== "UYU") {
+                        throw new Error("incomeWork.currencyId must be USD or UYU");
                     }
                     for (const month of monthRange) {
                         const nominalUsd = amountUsd;
@@ -986,6 +995,8 @@ const finalizeOnboarding = async (req, res) => {
                                 nominalUsd,
                                 extraordinaryUsd: 0,
                                 taxesUsd: computedTaxes,
+                                currencyId: incomeCurrencyId,
+                                encryptedPayload: encryptedIncomePayload,
                             },
                             create: {
                                 userId,
@@ -995,6 +1006,8 @@ const finalizeOnboarding = async (req, res) => {
                                 nominalUsd,
                                 extraordinaryUsd: 0,
                                 taxesUsd: computedTaxes,
+                                currencyId: incomeCurrencyId,
+                                encryptedPayload: encryptedIncomePayload ?? undefined,
                             },
                         });
                     }

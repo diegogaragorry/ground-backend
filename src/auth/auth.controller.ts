@@ -908,6 +908,7 @@ export const getOnboardingContext = async (req: AuthRequest, res: Response) => {
         amountUsd: true,
         nominalUsd: true,
         taxesUsd: true,
+        currencyId: true,
         encryptedPayload: true,
       },
     }),
@@ -994,10 +995,11 @@ export const getOnboardingContext = async (req: AuthRequest, res: Response) => {
     year,
     month,
     incomeWork: incomeRow
-      ? {
+        ? {
           amountUsd: incomeRow.amountUsd,
           nominalUsd: incomeRow.nominalUsd,
           taxesUsd: incomeRow.taxesUsd,
+          currencyId: incomeRow.currencyId,
           encryptedPayload: incomeRow.encryptedPayload,
         }
       : null,
@@ -1053,8 +1055,16 @@ export const finalizeOnboarding = async (req: AuthRequest, res: Response) => {
           }
           const incomeType = String(income.type ?? "liquid");
           const taxesUsd = Number(income.taxesUsd ?? 0);
+          const incomeCurrencyId = String(income.currencyId ?? "USD").trim().toUpperCase();
+          const encryptedIncomePayload =
+            typeof income.encryptedPayload === "string" && income.encryptedPayload.length > 0
+              ? income.encryptedPayload
+              : null;
           if (!Number.isFinite(taxesUsd) || taxesUsd < 0) {
             throw new Error("incomeWork.taxesUsd must be >= 0");
+          }
+          if (incomeCurrencyId !== "USD" && incomeCurrencyId !== "UYU") {
+            throw new Error("incomeWork.currencyId must be USD or UYU");
           }
 
           for (const month of monthRange) {
@@ -1068,6 +1078,8 @@ export const finalizeOnboarding = async (req: AuthRequest, res: Response) => {
                 nominalUsd,
                 extraordinaryUsd: 0,
                 taxesUsd: computedTaxes,
+                currencyId: incomeCurrencyId,
+                encryptedPayload: encryptedIncomePayload,
               },
               create: {
                 userId,
@@ -1077,6 +1089,8 @@ export const finalizeOnboarding = async (req: AuthRequest, res: Response) => {
                 nominalUsd,
                 extraordinaryUsd: 0,
                 taxesUsd: computedTaxes,
+                currencyId: incomeCurrencyId,
+                encryptedPayload: encryptedIncomePayload ?? undefined,
               },
             });
           }
