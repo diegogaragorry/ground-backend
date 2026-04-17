@@ -208,7 +208,7 @@ type TemplateSyncShape = {
 };
 
 async function syncPlannedForTemplatesBatch(
-  tx: Prisma.TransactionClient,
+  db: { plannedExpense: Prisma.TransactionClient["plannedExpense"] },
   userId: string,
   year: number,
   templates: TemplateSyncShape[],
@@ -255,13 +255,13 @@ async function syncPlannedForTemplatesBatch(
     }
   }
 
-  await tx.plannedExpense.createMany({
+  await db.plannedExpense.createMany({
     data: createRows,
     skipDuplicates: true,
   });
 
   for (const template of templates) {
-    await tx.plannedExpense.updateMany({
+    await db.plannedExpense.updateMany({
       where: {
         userId,
         year,
@@ -280,7 +280,7 @@ async function syncPlannedForTemplatesBatch(
     });
 
     for (const month of monthsOpen) {
-      await tx.plannedExpense.updateMany({
+      await db.plannedExpense.updateMany({
         where: {
           userId,
           year,
@@ -625,29 +625,29 @@ export const upsertExpenseTemplatesBatch = async (req: AuthRequest, res: Respons
         if (template.onboardingSourceKey) existingBySourceKey.set(template.onboardingSourceKey, created as any);
       }
 
-      await syncPlannedForTemplatesBatch(
-        tx,
-        userId,
-        year,
-        touched
-          .filter((template) => template.showInExpenses !== false)
-          .map((template) => ({
-            id: template.id,
-            expenseType: template.expenseType,
-            categoryId: template.categoryId,
-            description: template.description,
-            reminderLabel: template.reminderLabel,
-            defaultAmountUsd: template.defaultAmountUsd ?? null,
-            encryptedPayload: template.encryptedPayload ?? undefined,
-            reminderChannel: template.reminderChannel,
-            dueDayOfMonth: template.dueDayOfMonth,
-            remindDaysBefore: template.remindDaysBefore,
-          })),
-        monthsOpen
-      );
-
       return touched;
     });
+
+    await syncPlannedForTemplatesBatch(
+      prisma,
+      userId,
+      year,
+      rows
+        .filter((template: any) => template.showInExpenses !== false)
+        .map((template: any) => ({
+          id: template.id,
+          expenseType: template.expenseType,
+          categoryId: template.categoryId,
+          description: template.description,
+          reminderLabel: template.reminderLabel,
+          defaultAmountUsd: template.defaultAmountUsd ?? null,
+          encryptedPayload: template.encryptedPayload ?? undefined,
+          reminderChannel: template.reminderChannel,
+          dueDayOfMonth: template.dueDayOfMonth,
+          remindDaysBefore: template.remindDaysBefore,
+        })),
+      monthsOpen
+    );
 
     return res.json({ rows });
   } catch (e: any) {

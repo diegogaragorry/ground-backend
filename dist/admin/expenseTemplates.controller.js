@@ -140,7 +140,7 @@ async function syncPlannedAfterTemplateUpdate(userId, year, template, startMonth
         });
     }
 }
-async function syncPlannedForTemplatesBatch(tx, userId, year, templates, monthsOpen) {
+async function syncPlannedForTemplatesBatch(db, userId, year, templates, monthsOpen) {
     if (!templates.length || !monthsOpen.length)
         return;
     const createRows = [];
@@ -168,12 +168,12 @@ async function syncPlannedForTemplatesBatch(tx, userId, year, templates, monthsO
             });
         }
     }
-    await tx.plannedExpense.createMany({
+    await db.plannedExpense.createMany({
         data: createRows,
         skipDuplicates: true,
     });
     for (const template of templates) {
-        await tx.plannedExpense.updateMany({
+        await db.plannedExpense.updateMany({
             where: {
                 userId,
                 year,
@@ -191,7 +191,7 @@ async function syncPlannedForTemplatesBatch(tx, userId, year, templates, monthsO
             },
         });
         for (const month of monthsOpen) {
-            await tx.plannedExpense.updateMany({
+            await db.plannedExpense.updateMany({
                 where: {
                     userId,
                     year,
@@ -510,22 +510,22 @@ const upsertExpenseTemplatesBatch = async (req, res) => {
                 if (template.onboardingSourceKey)
                     existingBySourceKey.set(template.onboardingSourceKey, created);
             }
-            await syncPlannedForTemplatesBatch(tx, userId, year, touched
-                .filter((template) => template.showInExpenses !== false)
-                .map((template) => ({
-                id: template.id,
-                expenseType: template.expenseType,
-                categoryId: template.categoryId,
-                description: template.description,
-                reminderLabel: template.reminderLabel,
-                defaultAmountUsd: template.defaultAmountUsd ?? null,
-                encryptedPayload: template.encryptedPayload ?? undefined,
-                reminderChannel: template.reminderChannel,
-                dueDayOfMonth: template.dueDayOfMonth,
-                remindDaysBefore: template.remindDaysBefore,
-            })), monthsOpen);
             return touched;
         });
+        await syncPlannedForTemplatesBatch(prisma_1.prisma, userId, year, rows
+            .filter((template) => template.showInExpenses !== false)
+            .map((template) => ({
+            id: template.id,
+            expenseType: template.expenseType,
+            categoryId: template.categoryId,
+            description: template.description,
+            reminderLabel: template.reminderLabel,
+            defaultAmountUsd: template.defaultAmountUsd ?? null,
+            encryptedPayload: template.encryptedPayload ?? undefined,
+            reminderChannel: template.reminderChannel,
+            dueDayOfMonth: template.dueDayOfMonth,
+            remindDaysBefore: template.remindDaysBefore,
+        })), monthsOpen);
         return res.json({ rows });
     }
     catch (e) {
