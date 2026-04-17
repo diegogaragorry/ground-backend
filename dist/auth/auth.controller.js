@@ -578,6 +578,7 @@ const me = async (req, res) => {
             onboardingStep: true,
             mobileWarningDismissed: true,
             preferredDisplayCurrencyId: true,
+            expenseReminderSendMode: true,
             encryptionSalt: true,
             phone: true,
             phoneVerifiedAt: true,
@@ -654,6 +655,17 @@ const patchMe = async (req, res) => {
         const v = body.preferredDisplayCurrencyId == null ? null : String(body.preferredDisplayCurrencyId).trim().toUpperCase();
         if (v === null || v === "" || v === "USD" || v === "UYU") {
             data.preferredDisplayCurrencyId = v === "" ? null : v;
+        }
+    }
+    if (body?.expenseReminderSendMode !== undefined) {
+        const value = body.expenseReminderSendMode == null
+            ? "ONCE"
+            : String(body.expenseReminderSendMode).trim().toUpperCase();
+        if (value === "ONCE" || value === "DAILY_UNTIL_PAID") {
+            data.expenseReminderSendMode = value;
+        }
+        else {
+            return res.status(400).json({ error: "expenseReminderSendMode must be ONCE or DAILY_UNTIL_PAID" });
         }
     }
     if (Object.keys(data).length > 0) {

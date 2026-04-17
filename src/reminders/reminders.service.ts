@@ -11,11 +11,14 @@ type ReminderRow = {
   dueDate: Date | null;
   reminderLabel: string | null;
   description: string;
+  emailReminderSentAt: Date | null;
+  smsReminderSentAt: Date | null;
   user: {
     email: string;
     phone: string | null;
     phoneVerifiedAt: Date | null;
     preferredLanguage: string | null;
+    expenseReminderSendMode: "ONCE" | "DAILY_UNTIL_PAID";
   };
 };
 
@@ -58,6 +61,19 @@ function earliestDueDate(rows: ReminderRow[]) {
   const dates = rows.map((row) => row.dueDate).filter((value): value is Date => value instanceof Date);
   if (dates.length === 0) return null;
   return dates.sort((a, b) => a.getTime() - b.getTime())[0];
+}
+
+function sameUtcDay(a: Date | null, b: Date | null) {
+  if (!(a instanceof Date) || !(b instanceof Date)) return false;
+  return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
+}
+
+function shouldSendRowToday(row: ReminderRow, now: Date) {
+  const mode = row.user.expenseReminderSendMode ?? "ONCE";
+  const sentAt = row.reminderChannel === "EMAIL" ? row.emailReminderSentAt : row.smsReminderSentAt;
+  if (!(sentAt instanceof Date)) return true;
+  if (mode === "DAILY_UNTIL_PAID") return !sameUtcDay(sentAt, now);
+  return false;
 }
 
 function labelsForDueDate(
@@ -138,26 +154,16 @@ async function loadMonthlySchedule(
 export async function runDueExpenseReminders(limit = 100) {
   const now = new Date();
 
-  const dueRows = await prisma.plannedExpense.findMany({
+  const dueRowsRaw = await prisma.plannedExpense.findMany({
     where: {
       isConfirmed: false,
       reminderResolvedAt: null,
       reminderChannel: { in: ["EMAIL", "SMS"] },
       remindAt: { not: null, lte: now },
-      AND: [
-        {
-          OR: [
-            { reminderChannel: "EMAIL", emailReminderSentAt: null },
-            { reminderChannel: "SMS", smsReminderSentAt: null },
-          ],
-        },
-        {
-          OR: [{ templateId: null }, { template: { showInExpenses: true } }],
-        },
-      ],
+      OR: [{ templateId: null }, { template: { showInExpenses: true } }],
     },
     orderBy: [{ remindAt: "asc" }],
-    take: limit,
+    take: limit * 5,
     select: {
       id: true,
       userId: true,
@@ -165,16 +171,21 @@ export async function runDueExpenseReminders(limit = 100) {
       dueDate: true,
       reminderLabel: true,
       description: true,
+      emailReminderSentAt: true,
+      smsReminderSentAt: true,
       user: {
         select: {
           email: true,
           phone: true,
           phoneVerifiedAt: true,
           preferredLanguage: true,
+          expenseReminderSendMode: true,
         },
       },
     },
   });
+
+  const dueRows = (dueRowsRaw as ReminderRow[]).filter((row) => shouldSendRowToday(row, now)).slice(0, limit);
 
   const groups = groupRows(dueRows as ReminderRow[]);
   let sent = 0;

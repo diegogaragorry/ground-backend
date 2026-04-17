@@ -46,6 +46,20 @@ export function parseReminderDateInput(value: unknown, year: number, month: numb
   return buildReminderDateUtc(parsedYear, parsedMonth, parsedDay);
 }
 
+export function parseReminderFlexibleDateInput(value: unknown): Date | null {
+  const raw = String(value ?? "").trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (!match) return null;
+
+  const parsedYear = Number(match[1]);
+  const parsedMonth = Number(match[2]);
+  const parsedDay = Number(match[3]);
+  if (!Number.isInteger(parsedYear) || !Number.isInteger(parsedMonth) || !Number.isInteger(parsedDay)) return null;
+  if (parsedMonth < 1 || parsedMonth > 12 || parsedDay < 1 || parsedDay > 31) return null;
+
+  return buildReminderDateUtc(parsedYear, parsedMonth, parsedDay);
+}
+
 export function ymdFromReminderDate(date: Date | null | undefined) {
   if (!date) return "";
   const year = date.getUTCFullYear();
@@ -113,6 +127,37 @@ export function applyDueDateOverride(args: {
   return {
     dueDate: args.dueDate,
     remindAt,
+    reminderOverridden: true,
+    emailReminderSentAt: null,
+    smsReminderSentAt: null,
+    reminderResolvedAt: null,
+  };
+}
+
+export function applyReminderScheduleOverride(args: {
+  dueDate: Date;
+  remindAt: Date;
+  reminderChannel: ReminderChannel;
+}) {
+  if (args.reminderChannel === "NONE") {
+    return {
+      dueDate: null,
+      remindAt: null,
+      remindDaysBefore: 0,
+      reminderOverridden: true,
+      emailReminderSentAt: null,
+      smsReminderSentAt: null,
+      reminderResolvedAt: null,
+    };
+  }
+
+  const diffMs = args.dueDate.getTime() - args.remindAt.getTime();
+  const remindDaysBefore = Math.max(0, Math.round(diffMs / (24 * 60 * 60 * 1000)));
+
+  return {
+    dueDate: args.dueDate,
+    remindAt: args.remindAt,
+    remindDaysBefore,
     reminderOverridden: true,
     emailReminderSentAt: null,
     smsReminderSentAt: null,

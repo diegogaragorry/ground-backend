@@ -47,6 +47,11 @@ enum ReminderChannel {
   SMS
 }
 
+enum ReminderSendMode {
+  ONCE
+  DAILY_UNTIL_PAID
+}
+
 model User {
   id                         String   @id @default(uuid())
   email                      String   @unique
@@ -62,6 +67,7 @@ model User {
   onboardingStep             String   @default("welcome")
   mobileWarningDismissed     Boolean  @default(false)
   preferredDisplayCurrencyId String? // "USD" | "UYU" — moneda para mostrar totales/resúmenes
+  expenseReminderSendMode    ReminderSendMode @default(ONCE)
 
   // E2EE + account recovery (phone + email)
   encryptionSalt           String? // base64, unique per user; sent to client on login/me

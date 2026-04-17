@@ -39,6 +39,20 @@ function earliestDueDate(rows) {
         return null;
     return dates.sort((a, b) => a.getTime() - b.getTime())[0];
 }
+function sameUtcDay(a, b) {
+    if (!(a instanceof Date) || !(b instanceof Date))
+        return false;
+    return a.toISOString().slice(0, 10) === b.toISOString().slice(0, 10);
+}
+function shouldSendRowToday(row, now) {
+    const mode = row.user.expenseReminderSendMode ?? "ONCE";
+    const sentAt = row.reminderChannel === "EMAIL" ? row.emailReminderSentAt : row.smsReminderSentAt;
+    if (!(sentAt instanceof Date))
+        return true;
+    if (mode === "DAILY_UNTIL_PAID")
+        return !sameUtcDay(sentAt, now);
+    return false;
+}
 function labelsForDueDate(schedule, targetDate, fallbackRows) {
     if (!(targetDate instanceof Date))
         return [];
@@ -105,26 +119,16 @@ async function loadMonthlySchedule(userId, channel, referenceDate) {
 }
 async function runDueExpenseReminders(limit = 100) {
     const now = new Date();
-    const dueRows = await prisma_1.prisma.plannedExpense.findMany({
+    const dueRowsRaw = await prisma_1.prisma.plannedExpense.findMany({
         where: {
             isConfirmed: false,
             reminderResolvedAt: null,
             reminderChannel: { in: ["EMAIL", "SMS"] },
             remindAt: { not: null, lte: now },
-            AND: [
-                {
-                    OR: [
-                        { reminderChannel: "EMAIL", emailReminderSentAt: null },
-                        { reminderChannel: "SMS", smsReminderSentAt: null },
-                    ],
-                },
-                {
-                    OR: [{ templateId: null }, { template: { showInExpenses: true } }],
-                },
-            ],
+            OR: [{ templateId: null }, { template: { showInExpenses: true } }],
         },
         orderBy: [{ remindAt: "asc" }],
-        take: limit,
+        take: limit * 5,
         select: {
             id: true,
             userId: true,
@@ -132,16 +136,20 @@ async function runDueExpenseReminders(limit = 100) {
             dueDate: true,
             reminderLabel: true,
             description: true,
+            emailReminderSentAt: true,
+            smsReminderSentAt: true,
             user: {
                 select: {
                     email: true,
                     phone: true,
                     phoneVerifiedAt: true,
                     preferredLanguage: true,
+                    expenseReminderSendMode: true,
                 },
             },
         },
     });
+    const dueRows = dueRowsRaw.filter((row) => shouldSendRowToday(row, now)).slice(0, limit);
     const groups = groupRows(dueRows);
     let sent = 0;
     let failed = 0;

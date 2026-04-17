@@ -4,7 +4,9 @@ import { Response } from "express";
 import { prisma } from "../lib/prisma";
 import type { AuthRequest } from "../middlewares/requireAuth";
 import {
+  applyReminderScheduleOverride,
   applyDueDateOverride,
+  parseReminderFlexibleDateInput,
   materializeReminderForMonth,
   parseReminderDateInput,
 } from "../reminders/reminderUtils";
@@ -168,6 +170,34 @@ function buildPlannedPatchData(
         dueDate,
         reminderChannel: pe.reminderChannel,
         remindDaysBefore: pe.remindDaysBefore,
+      })
+    );
+  }
+
+  if (body?.remindAt !== undefined && body?.clearReminder !== true) {
+    if (pe.reminderChannel === "NONE") {
+      throw new Error("This draft has no reminder configured");
+    }
+    const dueDate =
+      patch.dueDate instanceof Date
+        ? patch.dueDate
+        : pe.dueDate instanceof Date
+          ? pe.dueDate
+          : null;
+    if (!(dueDate instanceof Date)) {
+      throw new Error("This draft has no due date configured");
+    }
+    const remindAt = parseReminderFlexibleDateInput(body.remindAt);
+    if (!remindAt) throw new Error("remindAt must be a valid date");
+    if (remindAt.getTime() > dueDate.getTime()) {
+      throw new Error("remindAt must be on or before dueDate");
+    }
+    Object.assign(
+      patch,
+      applyReminderScheduleOverride({
+        dueDate,
+        remindAt,
+        reminderChannel: pe.reminderChannel,
       })
     );
   }
@@ -474,6 +504,36 @@ export const updatePlannedExpense = async (req: AuthRequest, res: Response) => {
         dueDate,
         reminderChannel: pe.reminderChannel,
         remindDaysBefore: pe.remindDaysBefore,
+      })
+    );
+  }
+
+  if (req.body?.remindAt !== undefined && req.body?.clearReminder !== true) {
+    if (pe.reminderChannel === "NONE") {
+      return res.status(400).json({ error: "This draft has no reminder configured" });
+    }
+    const dueDate =
+      patch.dueDate instanceof Date
+        ? patch.dueDate
+        : pe.dueDate instanceof Date
+          ? pe.dueDate
+          : null;
+    if (!(dueDate instanceof Date)) {
+      return res.status(400).json({ error: "This draft has no due date configured" });
+    }
+    const remindAt = parseReminderFlexibleDateInput(req.body.remindAt);
+    if (!remindAt) {
+      return res.status(400).json({ error: "remindAt must be a valid date" });
+    }
+    if (remindAt.getTime() > dueDate.getTime()) {
+      return res.status(400).json({ error: "remindAt must be on or before dueDate" });
+    }
+    Object.assign(
+      patch,
+      applyReminderScheduleOverride({
+        dueDate,
+        remindAt,
+        reminderChannel: pe.reminderChannel,
       })
     );
   }
