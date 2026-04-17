@@ -9,6 +9,7 @@ import {
   parseReminderFlexibleDateInput,
   materializeReminderForMonth,
   parseReminderDateInput,
+  parseReminderChannel,
 } from "../reminders/reminderUtils";
 
 const ENCRYPTED_PLACEHOLDER_PREFIX = "(encrypted-";
@@ -477,7 +478,13 @@ export const updatePlannedExpense = async (req: AuthRequest, res: Response) => {
     patch.expenseType = cat.expenseType;
   }
 
-  if (req.body?.clearReminder === true) {
+  const reminderChannelProvided = req.body?.reminderChannel !== undefined;
+  const requestedReminderChannel = reminderChannelProvided ? parseReminderChannel(req.body?.reminderChannel) : null;
+  if (reminderChannelProvided && requestedReminderChannel == null) {
+    return res.status(400).json({ error: "Invalid reminderChannel" });
+  }
+
+  if (req.body?.clearReminder === true || requestedReminderChannel === "NONE") {
     Object.assign(patch, {
       reminderChannel: "NONE",
       dueDate: null,
@@ -490,52 +497,60 @@ export const updatePlannedExpense = async (req: AuthRequest, res: Response) => {
     });
   }
 
-  if (req.body?.dueDate !== undefined && req.body?.clearReminder !== true) {
-    if (pe.reminderChannel === "NONE") {
-      return res.status(400).json({ error: "This draft has no reminder configured" });
-    }
-    const dueDate = parseReminderDateInput(req.body.dueDate, pe.year, pe.month);
-    if (!dueDate) {
-      return res.status(400).json({ error: "dueDate must be a valid date within the same month" });
-    }
-    Object.assign(
-      patch,
-      applyDueDateOverride({
-        dueDate,
-        reminderChannel: pe.reminderChannel,
-        remindDaysBefore: pe.remindDaysBefore,
-      })
-    );
-  }
+  const effectiveReminderChannel =
+    requestedReminderChannel && requestedReminderChannel !== "NONE"
+      ? requestedReminderChannel
+      : patch.reminderChannel && patch.reminderChannel !== "NONE"
+        ? patch.reminderChannel
+        : pe.reminderChannel;
 
-  if (req.body?.remindAt !== undefined && req.body?.clearReminder !== true) {
-    if (pe.reminderChannel === "NONE") {
+  const wantsReminderScheduleUpdate =
+    req.body?.clearReminder !== true &&
+    requestedReminderChannel !== "NONE" &&
+    (
+      requestedReminderChannel != null ||
+      req.body?.dueDate !== undefined ||
+      req.body?.remindAt !== undefined
+    );
+
+  if (wantsReminderScheduleUpdate) {
+    if (effectiveReminderChannel === "NONE") {
       return res.status(400).json({ error: "This draft has no reminder configured" });
     }
+
     const dueDate =
-      patch.dueDate instanceof Date
-        ? patch.dueDate
+      req.body?.dueDate !== undefined
+        ? parseReminderDateInput(req.body.dueDate, pe.year, pe.month)
         : pe.dueDate instanceof Date
           ? pe.dueDate
           : null;
     if (!(dueDate instanceof Date)) {
-      return res.status(400).json({ error: "This draft has no due date configured" });
+      return res.status(400).json({ error: "dueDate must be a valid date within the same month" });
     }
-    const remindAt = parseReminderFlexibleDateInput(req.body.remindAt);
-    if (!remindAt) {
+
+    const remindAt =
+      req.body?.remindAt !== undefined
+        ? parseReminderFlexibleDateInput(req.body.remindAt)
+        : pe.remindAt instanceof Date && requestedReminderChannel == null
+          ? pe.remindAt
+          : dueDate;
+    if (!(remindAt instanceof Date)) {
       return res.status(400).json({ error: "remindAt must be a valid date" });
     }
     if (remindAt.getTime() > dueDate.getTime()) {
       return res.status(400).json({ error: "remindAt must be on or before dueDate" });
     }
-    Object.assign(
-      patch,
-      applyReminderScheduleOverride({
+
+    Object.assign(patch, {
+      reminderChannel: effectiveReminderChannel,
+      ...applyReminderScheduleOverride({
         dueDate,
         remindAt,
-        reminderChannel: pe.reminderChannel,
-      })
-    );
+        reminderChannel: effectiveReminderChannel,
+      }),
+    });
+  } else if (requestedReminderChannel && requestedReminderChannel !== "NONE") {
+    patch.reminderChannel = requestedReminderChannel;
   }
 
   const updated = await prisma.plannedExpense.update({
