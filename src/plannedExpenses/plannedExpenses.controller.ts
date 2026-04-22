@@ -531,7 +531,7 @@ export const updatePlannedExpense = async (req: AuthRequest, res: Response) => {
     const remindAt =
       req.body?.remindAt !== undefined
         ? parseReminderFlexibleDateInput(req.body.remindAt)
-        : pe.remindAt instanceof Date && requestedReminderChannel == null
+        : pe.remindAt instanceof Date
           ? pe.remindAt
           : dueDate;
     if (!(remindAt instanceof Date)) {
