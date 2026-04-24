@@ -30,11 +30,11 @@ const RECENT_USERS_LIMIT = 25;
 const RECENT_CODES_LIMIT = 40;
 const RECENT_CODES_FETCH_LIMIT = 120;
 const RECENT_LOGINS_LIMIT = 10;
-const RECENT_LOGINS_FETCH_LIMIT = 80;
 const EXCLUDED_ACTIVITY_EMAILS = new Set([
     "diego.garagorry@gmail.com",
     "iturgara@gmail.com",
 ]);
+const EXCLUDED_ACTIVITY_EMAIL_LIST = [...EXCLUDED_ACTIVITY_EMAILS];
 function normalizeActivityEmail(email) {
     return String(email ?? "").trim().toLowerCase();
 }
@@ -66,8 +66,16 @@ const getRecentActivity = async (req, res) => {
             },
         }),
         prisma_1.prisma.loginLog.findMany({
+            where: {
+                user: {
+                    email: {
+                        notIn: EXCLUDED_ACTIVITY_EMAIL_LIST,
+                        not: { endsWith: "@test.com" },
+                    },
+                },
+            },
             orderBy: { loggedAt: "desc" },
-            take: RECENT_LOGINS_FETCH_LIMIT,
+            take: RECENT_LOGINS_LIMIT,
             select: {
                 id: true,
                 userId: true,
@@ -87,8 +95,6 @@ const getRecentActivity = async (req, res) => {
         status: c.usedAt ? "used" : c.expiresAt <= now ? "expired" : "pending",
     }));
     const recentLoginsFlat = recentLoginsRaw
-        .filter((l) => !isExcludedActivityEmail(l.user.email))
-        .slice(0, RECENT_LOGINS_LIMIT)
         .map((l) => ({
         id: l.id,
         userId: l.userId,
