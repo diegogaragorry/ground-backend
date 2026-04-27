@@ -307,6 +307,7 @@ const createExpenseTemplate = async (req, res) => {
         return res.status(403).json({ error: "Invalid categoryId for this user" });
     const year = serverYear();
     const startMonth = clampStartMonth(req.body?.startMonth);
+    const showInExpenses = req.body?.showInExpenses === false ? false : true;
     try {
         const created = await prisma_1.prisma.expenseTemplate.create({
             data: {
@@ -320,23 +321,26 @@ const createExpenseTemplate = async (req, res) => {
                 reminderChannel: reminderConfig.reminderChannel,
                 dueDayOfMonth: reminderConfig.dueDayOfMonth,
                 remindDaysBefore: reminderConfig.remindDaysBefore,
+                showInExpenses,
                 ...(hasEncrypted ? { encryptedPayload } : {}),
             },
             include: { category: true },
         });
         // generar PlannedExpense para meses abiertos del año corriente
-        await ensurePlannedForTemplate(userId, year, {
-            id: created.id,
-            expenseType: created.expenseType,
-            categoryId: created.categoryId,
-            description: created.description,
-            reminderLabel: created.reminderLabel,
-            defaultAmountUsd: created.defaultAmountUsd ?? null,
-            encryptedPayload: created.encryptedPayload ?? undefined,
-            reminderChannel: created.reminderChannel,
-            dueDayOfMonth: created.dueDayOfMonth,
-            remindDaysBefore: created.remindDaysBefore,
-        }, startMonth);
+        if (created.showInExpenses !== false) {
+            await ensurePlannedForTemplate(userId, year, {
+                id: created.id,
+                expenseType: created.expenseType,
+                categoryId: created.categoryId,
+                description: created.description,
+                reminderLabel: created.reminderLabel,
+                defaultAmountUsd: created.defaultAmountUsd ?? null,
+                encryptedPayload: created.encryptedPayload ?? undefined,
+                reminderChannel: created.reminderChannel,
+                dueDayOfMonth: created.dueDayOfMonth,
+                remindDaysBefore: created.remindDaysBefore,
+            }, startMonth);
+        }
         res.status(201).json(created);
     }
     catch (e) {
@@ -370,10 +374,12 @@ const createExpenseTemplate = async (req, res) => {
                             reminderChannel: reminderConfig.reminderChannel,
                             dueDayOfMonth: reminderConfig.dueDayOfMonth,
                             remindDaysBefore: reminderConfig.remindDaysBefore,
+                            showInExpenses,
                         },
                     });
                 }
-                await syncPlannedAfterTemplateUpdate(userId, year, templatePayload, startMonth);
+                if (showInExpenses)
+                    await syncPlannedAfterTemplateUpdate(userId, year, templatePayload, startMonth);
                 const updated = await prisma_1.prisma.expenseTemplate.findUnique({
                     where: { id: existing.id },
                     include: { category: true },
@@ -388,6 +394,7 @@ const createExpenseTemplate = async (req, res) => {
 exports.createExpenseTemplate = createExpenseTemplate;
 // POST /admin/expenseTemplates/batch
 // Body: { startMonth?: number, templates: Array<{ categoryId, description, onboardingSourceKey?, defaultAmountUsd, defaultCurrencyId?, showInExpenses? }> }
+// Onboarding-managed templates default to hidden unless the wizard explicitly marks them visible.
 const upsertExpenseTemplatesBatch = async (req, res) => {
     const userId = req.userId;
     const rawTemplates = req.body?.templates;
@@ -421,7 +428,11 @@ const upsertExpenseTemplatesBatch = async (req, res) => {
             onboardingSourceKey,
             defaultAmountUsd,
             defaultCurrencyId,
-            showInExpenses: raw?.showInExpenses !== false,
+            showInExpenses: typeof raw?.showInExpenses === "boolean"
+                ? raw.showInExpenses
+                : onboardingSourceKey
+                    ? false
+                    : true,
             reminderLabel,
             reminderChannel: reminderConfig.reminderChannel,
             dueDayOfMonth: reminderConfig.dueDayOfMonth,

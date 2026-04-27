@@ -43,6 +43,7 @@ export async function bootstrapUserData(userId: string) {
           descriptionKey: t.descriptionKey,
           categoryId: categoryMap.get(`${t.category}|${t.type}`)!,
           defaultAmountUsd: null,
+          showInExpenses: false,
         },
       })
     )

@@ -30,6 +30,7 @@ async function bootstrapUserData(userId) {
             descriptionKey: t.descriptionKey,
             categoryId: categoryMap.get(`${t.category}|${t.type}`),
             defaultAmountUsd: null,
+            showInExpenses: false,
         },
     })));
 }

@@ -399,6 +399,7 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
 
   const year = serverYear();
   const startMonth = clampStartMonth(req.body?.startMonth);
+  const showInExpenses = req.body?.showInExpenses === false ? false : true;
 
   try {
     const created = await prisma.expenseTemplate.create({
@@ -413,24 +414,27 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
         reminderChannel: reminderConfig!.reminderChannel,
         dueDayOfMonth: reminderConfig!.dueDayOfMonth,
         remindDaysBefore: reminderConfig!.remindDaysBefore,
+        showInExpenses,
         ...(hasEncrypted ? { encryptedPayload } : {}),
       },
       include: { category: true },
     });
 
     // generar PlannedExpense para meses abiertos del año corriente
-    await ensurePlannedForTemplate(userId, year, {
-      id: created.id,
-      expenseType: created.expenseType,
-      categoryId: created.categoryId,
-      description: created.description,
-      reminderLabel: created.reminderLabel,
-      defaultAmountUsd: created.defaultAmountUsd ?? null,
-      encryptedPayload: created.encryptedPayload ?? undefined,
-      reminderChannel: created.reminderChannel,
-      dueDayOfMonth: created.dueDayOfMonth,
-      remindDaysBefore: created.remindDaysBefore,
-    }, startMonth);
+    if (created.showInExpenses !== false) {
+      await ensurePlannedForTemplate(userId, year, {
+        id: created.id,
+        expenseType: created.expenseType,
+        categoryId: created.categoryId,
+        description: created.description,
+        reminderLabel: created.reminderLabel,
+        defaultAmountUsd: created.defaultAmountUsd ?? null,
+        encryptedPayload: created.encryptedPayload ?? undefined,
+        reminderChannel: created.reminderChannel,
+        dueDayOfMonth: created.dueDayOfMonth,
+        remindDaysBefore: created.remindDaysBefore,
+      }, startMonth);
+    }
 
     res.status(201).json(created);
   } catch (e: any) {
@@ -464,10 +468,11 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
               reminderChannel: reminderConfig!.reminderChannel,
               dueDayOfMonth: reminderConfig!.dueDayOfMonth,
               remindDaysBefore: reminderConfig!.remindDaysBefore,
+              showInExpenses,
             },
           });
         }
-        await syncPlannedAfterTemplateUpdate(userId, year, templatePayload, startMonth);
+        if (showInExpenses) await syncPlannedAfterTemplateUpdate(userId, year, templatePayload, startMonth);
         const updated = await prisma.expenseTemplate.findUnique({
           where: { id: existing.id },
           include: { category: true },
@@ -482,6 +487,7 @@ export const createExpenseTemplate = async (req: AuthRequest, res: Response) => 
 
 // POST /admin/expenseTemplates/batch
 // Body: { startMonth?: number, templates: Array<{ categoryId, description, onboardingSourceKey?, defaultAmountUsd, defaultCurrencyId?, showInExpenses? }> }
+// Onboarding-managed templates default to hidden unless the wizard explicitly marks them visible.
 export const upsertExpenseTemplatesBatch = async (req: AuthRequest, res: Response) => {
   const userId = req.userId!;
   const rawTemplates = req.body?.templates;
@@ -527,7 +533,12 @@ export const upsertExpenseTemplatesBatch = async (req: AuthRequest, res: Respons
       onboardingSourceKey,
       defaultAmountUsd,
       defaultCurrencyId,
-      showInExpenses: raw?.showInExpenses !== false,
+      showInExpenses:
+        typeof raw?.showInExpenses === "boolean"
+          ? raw.showInExpenses
+          : onboardingSourceKey
+            ? false
+            : true,
       reminderLabel,
       reminderChannel: reminderConfig.reminderChannel,
       dueDayOfMonth: reminderConfig.dueDayOfMonth,
