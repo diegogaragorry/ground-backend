@@ -5,6 +5,7 @@ const prisma_1 = require("../lib/prisma");
 const mailer_1 = require("../lib/mailer");
 const reminderMessages_1 = require("../lib/reminderMessages");
 const preferredLanguage_1 = require("../lib/preferredLanguage");
+const plannedVisibility_1 = require("../lib/plannedVisibility");
 const sms_1 = require("../lib/sms");
 function isEncryptedPlaceholder(value) {
     return typeof value === "string" && /^\(encrypted(?:-[a-z0-9]{8})?\)$/i.test(String(value).trim());
@@ -76,7 +77,7 @@ function monthBounds(referenceDate) {
 }
 async function loadMonthlySchedule(userId, channel, referenceDate) {
     const { start, end } = monthBounds(referenceDate);
-    const rows = await prisma_1.prisma.plannedExpense.findMany({
+    const rawRows = await prisma_1.prisma.plannedExpense.findMany({
         where: {
             userId,
             isConfirmed: false,
@@ -87,11 +88,16 @@ async function loadMonthlySchedule(userId, channel, referenceDate) {
         },
         orderBy: [{ dueDate: "asc" }, { createdAt: "asc" }],
         select: {
+            templateId: true,
+            isConfirmed: true,
+            expenseType: true,
+            categoryId: true,
             dueDate: true,
             reminderLabel: true,
             description: true,
         },
     });
+    const rows = await (0, plannedVisibility_1.filterVisiblePlannedRows)(userId, rawRows);
     const grouped = new Map();
     for (const row of rows) {
         if (!(row.dueDate instanceof Date))
@@ -132,6 +138,10 @@ async function runDueExpenseReminders(limit = 100) {
         select: {
             id: true,
             userId: true,
+            templateId: true,
+            isConfirmed: true,
+            expenseType: true,
+            categoryId: true,
             reminderChannel: true,
             dueDate: true,
             reminderLabel: true,
@@ -149,7 +159,8 @@ async function runDueExpenseReminders(limit = 100) {
             },
         },
     });
-    const dueRows = dueRowsRaw.filter((row) => shouldSendRowToday(row, now)).slice(0, limit);
+    const visibleDueRows = await Promise.all([...new Set(dueRowsRaw.map((row) => row.userId))].map(async (userId) => (0, plannedVisibility_1.filterVisiblePlannedRows)(userId, dueRowsRaw.filter((row) => row.userId === userId))));
+    const dueRows = visibleDueRows.flat().filter((row) => shouldSendRowToday(row, now)).slice(0, limit);
     const groups = groupRows(dueRows);
     let sent = 0;
     let failed = 0;

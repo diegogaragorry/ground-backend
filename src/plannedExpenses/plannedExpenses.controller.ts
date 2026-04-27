@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { Response } from "express";
 import { prisma } from "../lib/prisma";
 import type { AuthRequest } from "../middlewares/requireAuth";
+import { filterVisiblePlannedRows } from "../lib/plannedVisibility";
 import {
   applyReminderScheduleOverride,
   applyDueDateOverride,
@@ -373,7 +374,7 @@ export const listPlannedExpenses = async (req: AuthRequest, res: Response) => {
     ? { month }
     : {};
 
-  const rows = await prisma.plannedExpense.findMany({
+  const rawRows = await prisma.plannedExpense.findMany({
     where: {
       userId,
       year,
@@ -386,6 +387,7 @@ export const listPlannedExpenses = async (req: AuthRequest, res: Response) => {
       template: { select: { defaultCurrencyId: true } },
     },
   });
+  const rows = await filterVisiblePlannedRows(userId, rawRows);
 
   if (month != null) {
     res.json({ year, month, rows });

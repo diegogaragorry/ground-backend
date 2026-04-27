@@ -4,6 +4,7 @@ exports.ensureYearPlanned = exports.confirmPlannedExpensesBatch = exports.confir
 // src/plannedExpenses/plannedExpenses.controller.ts
 const crypto_1 = require("crypto");
 const prisma_1 = require("../lib/prisma");
+const plannedVisibility_1 = require("../lib/plannedVisibility");
 const reminderUtils_1 = require("../reminders/reminderUtils");
 const ENCRYPTED_PLACEHOLDER_PREFIX = "(encrypted-";
 const ENCRYPTED_PLACEHOLDER_SUFFIX = ")";
@@ -300,7 +301,7 @@ const listPlannedExpenses = async (req, res) => {
     const whereMonth = month != null && Number.isInteger(month) && month >= 1 && month <= 12
         ? { month }
         : {};
-    const rows = await prisma_1.prisma.plannedExpense.findMany({
+    const rawRows = await prisma_1.prisma.plannedExpense.findMany({
         where: {
             userId,
             year,
@@ -313,6 +314,7 @@ const listPlannedExpenses = async (req, res) => {
             template: { select: { defaultCurrencyId: true } },
         },
     });
+    const rows = await (0, plannedVisibility_1.filterVisiblePlannedRows)(userId, rawRows);
     if (month != null) {
         res.json({ year, month, rows });
     }

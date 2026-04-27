@@ -2,6 +2,7 @@ import { Response } from "express";
 import { prisma } from "../lib/prisma";
 import { toUsd } from "../utils/fx";
 import type { AuthRequest } from "../middlewares/requireAuth";
+import { filterVisiblePlannedRows } from "../lib/plannedVisibility";
 
 function paramId(params: { id?: string | string[] }): string {
   const v = params.id;
@@ -438,7 +439,7 @@ export const expensesPageData = async (req: AuthRequest, res: Response) => {
   const start = new Date(Date.UTC(ym.year, ym.month - 1, 1, 0, 0, 0));
   const end = new Date(Date.UTC(ym.year, ym.month, 1, 0, 0, 0));
 
-  const [categories, expenses, plannedRows, monthCloses] = await Promise.all([
+  const [categories, expenses, rawPlannedRows, monthCloses] = await Promise.all([
     prisma.category.findMany({
       where: { userId },
       orderBy: { name: "asc" },
@@ -479,6 +480,7 @@ export const expensesPageData = async (req: AuthRequest, res: Response) => {
       select: { year: true, month: true, isClosed: true },
     }),
   ]);
+  const plannedRows = await filterVisiblePlannedRows(userId, rawPlannedRows);
 
   res.json({
     year: ym.year,

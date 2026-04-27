@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.deleteExpense = exports.updateExpense = exports.expensesSummary = exports.expensesPageData = exports.listExpensesByMonth = exports.listExpensesByYear = exports.listMerchantMappingRules = exports.importExpensesBatch = exports.createExpense = void 0;
 const prisma_1 = require("../lib/prisma");
 const fx_1 = require("../utils/fx");
+const plannedVisibility_1 = require("../lib/plannedVisibility");
 function paramId(params) {
     const v = params.id;
     return Array.isArray(v) ? (v[0] ?? "") : (v ?? "");
@@ -395,7 +396,7 @@ const expensesPageData = async (req, res) => {
     }
     const start = new Date(Date.UTC(ym.year, ym.month - 1, 1, 0, 0, 0));
     const end = new Date(Date.UTC(ym.year, ym.month, 1, 0, 0, 0));
-    const [categories, expenses, plannedRows, monthCloses] = await Promise.all([
+    const [categories, expenses, rawPlannedRows, monthCloses] = await Promise.all([
         prisma_1.prisma.category.findMany({
             where: { userId },
             orderBy: { name: "asc" },
@@ -436,6 +437,7 @@ const expensesPageData = async (req, res) => {
             select: { year: true, month: true, isClosed: true },
         }),
     ]);
+    const plannedRows = await (0, plannedVisibility_1.filterVisiblePlannedRows)(userId, rawPlannedRows);
     res.json({
         year: ym.year,
         month: ym.month,
