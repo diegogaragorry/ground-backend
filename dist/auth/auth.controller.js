@@ -804,6 +804,7 @@ const getOnboardingContext = async (req, res) => {
         "Coffee & Snacks",
         "Delivery",
         "Events & Concerts",
+        "Events & Outings",
     ];
     const [investments, snapshots, incomeRow, templates] = await Promise.all([
         prisma_1.prisma.investment.findMany({

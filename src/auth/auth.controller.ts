@@ -877,6 +877,7 @@ export const getOnboardingContext = async (req: AuthRequest, res: Response) => {
     "Coffee & Snacks",
     "Delivery",
     "Events & Concerts",
+    "Events & Outings",
   ];
 
   const [investments, snapshots, incomeRow, templates] = await Promise.all([
