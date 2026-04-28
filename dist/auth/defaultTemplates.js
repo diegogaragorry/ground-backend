@@ -1,8 +1,17 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DEFAULT_TEMPLATES = void 0;
+exports.DEFAULT_TEMPLATES = exports.DEFAULT_CATEGORIES = void 0;
 // src/auth/defaultTemplates.ts
 // category/description are stored in DB (English); categoryKey/descriptionKey are for i18n on frontend.
+exports.DEFAULT_CATEGORIES = [
+    { type: "FIXED", name: "Housing", nameKey: "housing" },
+    { type: "FIXED", name: "Utilities", nameKey: "utilities" },
+    { type: "FIXED", name: "Health & Wellness", nameKey: "health_wellness" },
+    { type: "VARIABLE", name: "Food & Grocery", nameKey: "food_grocery" },
+    { type: "VARIABLE", name: "Transport", nameKey: "transport" },
+    { type: "VARIABLE", name: "Dining & Leisure", nameKey: "dining_leisure" },
+    { type: "VARIABLE", name: "Other", nameKey: "other" },
+];
 exports.DEFAULT_TEMPLATES = [
     // FIXED
     { type: "FIXED", category: "Housing", categoryKey: "housing", description: "Rent", descriptionKey: "rent" },
