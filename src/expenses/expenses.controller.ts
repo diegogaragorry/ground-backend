@@ -366,6 +366,64 @@ export const listMerchantMappingRules = async (req: AuthRequest, res: Response) 
   });
 };
 
+export const upsertMerchantMappingRule = async (req: AuthRequest, res: Response) => {
+  const userId = req.userId!;
+
+  let rule: ReturnType<typeof parseLearnedRuleInput>;
+  try {
+    rule = parseLearnedRuleInput(req.body, 0);
+  } catch (err: any) {
+    return res.status(400).json({ error: err?.message ?? "Invalid rule" });
+  }
+
+  const category = await prisma.category.findFirst({
+    where: { id: rule.categoryId, userId },
+    select: { id: true, name: true, nameKey: true, expenseType: true },
+  });
+  if (!category) return res.status(403).json({ error: "Invalid categoryId for this user" });
+
+  const row = await prisma.merchantMappingRule.upsert({
+    where: {
+      userId_merchantFingerprint: {
+        userId,
+        merchantFingerprint: rule.merchantFingerprint,
+      },
+    },
+    create: {
+      userId,
+      categoryId: rule.categoryId,
+      merchantFingerprint: rule.merchantFingerprint,
+      encryptedPayload: rule.encryptedPayload,
+      expenseType: rule.expenseType ?? category.expenseType,
+      useCount: 1,
+      lastLearnedAt: new Date(),
+    },
+    update: {
+      categoryId: rule.categoryId,
+      encryptedPayload: rule.encryptedPayload,
+      expenseType: rule.expenseType ?? category.expenseType,
+      useCount: { increment: 1 },
+      lastLearnedAt: new Date(),
+    },
+    include: {
+      category: {
+        select: { id: true, name: true, nameKey: true, expenseType: true },
+      },
+    },
+  });
+
+  res.json({
+    id: row.id,
+    merchantFingerprint: row.merchantFingerprint,
+    categoryId: row.categoryId,
+    encryptedPayload: row.encryptedPayload,
+    expenseType: row.expenseType,
+    useCount: row.useCount,
+    lastLearnedAt: row.lastLearnedAt,
+    category: row.category,
+  });
+};
+
 function parseYear(query: any): number | null {
   const year = Number(query.year);
   if (!Number.isInteger(year) || year < 2000 || year > 2100) return null;

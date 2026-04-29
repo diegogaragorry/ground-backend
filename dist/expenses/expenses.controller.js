@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deleteExpense = exports.updateExpense = exports.expensesSummary = exports.expensesPageData = exports.listExpensesByMonth = exports.listExpensesByYear = exports.listMerchantMappingRules = exports.importExpensesBatch = exports.createExpense = void 0;
+exports.deleteExpense = exports.updateExpense = exports.expensesSummary = exports.expensesPageData = exports.listExpensesByMonth = exports.listExpensesByYear = exports.upsertMerchantMappingRule = exports.listMerchantMappingRules = exports.importExpensesBatch = exports.createExpense = void 0;
 const prisma_1 = require("../lib/prisma");
 const fx_1 = require("../utils/fx");
 const plannedVisibility_1 = require("../lib/plannedVisibility");
@@ -329,6 +329,62 @@ const listMerchantMappingRules = async (req, res) => {
     });
 };
 exports.listMerchantMappingRules = listMerchantMappingRules;
+const upsertMerchantMappingRule = async (req, res) => {
+    const userId = req.userId;
+    let rule;
+    try {
+        rule = parseLearnedRuleInput(req.body, 0);
+    }
+    catch (err) {
+        return res.status(400).json({ error: err?.message ?? "Invalid rule" });
+    }
+    const category = await prisma_1.prisma.category.findFirst({
+        where: { id: rule.categoryId, userId },
+        select: { id: true, name: true, nameKey: true, expenseType: true },
+    });
+    if (!category)
+        return res.status(403).json({ error: "Invalid categoryId for this user" });
+    const row = await prisma_1.prisma.merchantMappingRule.upsert({
+        where: {
+            userId_merchantFingerprint: {
+                userId,
+                merchantFingerprint: rule.merchantFingerprint,
+            },
+        },
+        create: {
+            userId,
+            categoryId: rule.categoryId,
+            merchantFingerprint: rule.merchantFingerprint,
+            encryptedPayload: rule.encryptedPayload,
+            expenseType: rule.expenseType ?? category.expenseType,
+            useCount: 1,
+            lastLearnedAt: new Date(),
+        },
+        update: {
+            categoryId: rule.categoryId,
+            encryptedPayload: rule.encryptedPayload,
+            expenseType: rule.expenseType ?? category.expenseType,
+            useCount: { increment: 1 },
+            lastLearnedAt: new Date(),
+        },
+        include: {
+            category: {
+                select: { id: true, name: true, nameKey: true, expenseType: true },
+            },
+        },
+    });
+    res.json({
+        id: row.id,
+        merchantFingerprint: row.merchantFingerprint,
+        categoryId: row.categoryId,
+        encryptedPayload: row.encryptedPayload,
+        expenseType: row.expenseType,
+        useCount: row.useCount,
+        lastLearnedAt: row.lastLearnedAt,
+        category: row.category,
+    });
+};
+exports.upsertMerchantMappingRule = upsertMerchantMappingRule;
 function parseYear(query) {
     const year = Number(query.year);
     if (!Number.isInteger(year) || year < 2000 || year > 2100)

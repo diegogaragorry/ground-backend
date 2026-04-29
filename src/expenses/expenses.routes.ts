@@ -5,6 +5,7 @@ import {
   createExpense,
   importExpensesBatch,
   listMerchantMappingRules,
+  upsertMerchantMappingRule,
   expensesPageData,
   listExpensesByMonth,
   listExpensesByYear,
@@ -18,6 +19,7 @@ const router = Router();
 router.post("/", requireAuth, requireBillingWriteAccess, createExpense);
 router.post("/import/commit", requireAuth, requireBillingWriteAccess, importExpensesBatch);
 router.get("/import/rules", requireAuth, listMerchantMappingRules);
+router.post("/import/rules", requireAuth, requireBillingWriteAccess, upsertMerchantMappingRule);
 router.get("/page-data", requireAuth, expensesPageData);
 router.get("/", requireAuth, (req, res, next) => {
   if (req.query?.year != null && req.query?.month == null) {
