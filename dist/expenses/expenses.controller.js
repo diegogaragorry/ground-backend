@@ -526,6 +526,7 @@ const updateExpense = async (req, res) => {
         if (!category)
             return res.status(403).json({ error: "Invalid categoryId for this user" });
         data.categoryId = categoryId;
+        data.expenseType = category.expenseType;
     }
     if (currencyId !== undefined) {
         if (typeof currencyId !== "string")
