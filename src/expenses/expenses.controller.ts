@@ -159,6 +159,9 @@ export const importExpensesBatch = async (req: AuthRequest, res: Response) => {
 
   const normalizedItems = rawItems.map((raw, index) => {
     const hasEncrypted = typeof raw?.encryptedPayload === "string" && raw.encryptedPayload.length > 0;
+    if (hasEncrypted && raw?.importMetaVersion !== 1) {
+      throw new Error(`Row ${index + 1}: encrypted import metadata is required`);
+    }
     const description = typeof raw?.description === "string" ? raw.description.trim() : "";
     if (!hasEncrypted && !description) {
       throw new Error(`Row ${index + 1}: description is required`);
