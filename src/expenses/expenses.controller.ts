@@ -159,8 +159,8 @@ export const importExpensesBatch = async (req: AuthRequest, res: Response) => {
 
   const normalizedItems = rawItems.map((raw, index) => {
     const hasEncrypted = typeof raw?.encryptedPayload === "string" && raw.encryptedPayload.length > 0;
-    if (hasEncrypted && raw?.importMetaVersion !== 1) {
-      throw new Error(`Row ${index + 1}: encrypted import metadata is required`);
+    if (hasEncrypted && raw?.importMetaVersion !== 2) {
+      throw new Error(`Row ${index + 1}: encrypted import metadata v2 is required`);
     }
     const description = typeof raw?.description === "string" ? raw.description.trim() : "";
     if (!hasEncrypted && !description) {
@@ -603,11 +603,14 @@ export const updateExpense = async (req: AuthRequest, res: Response) => {
   const existing = await prisma.expense.findFirst({ where: { id, userId } });
   if (!existing) return res.status(404).json({ error: "Expense not found" });
 
-  const { description, amount, date, categoryId, currencyId, usdUyuRate, encryptedPayload } = req.body ?? {};
+  const { description, amount, date, categoryId, currencyId, usdUyuRate, encryptedPayload, encryptedPayloadUpdateVersion } = req.body ?? {};
 
   const data: any = {};
 
   const hasEncryptedPayload = typeof encryptedPayload === "string" && encryptedPayload.length > 0;
+  if (hasEncryptedPayload && existing.encryptedPayload && encryptedPayloadUpdateVersion !== 1) {
+    return res.status(400).json({ error: "encryptedPayloadUpdateVersion is required" });
+  }
 
   if (description !== undefined) {
     if (typeof description !== "string") {
